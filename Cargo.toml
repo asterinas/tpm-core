@@ -1,9 +1,9 @@
 [package]
 name = "tpm-core"
 version = "0.1.1"
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
+edition = "2021"
+rust-version = "1.75"
+license = "MPL-2.0"
 description = "TPM 2.0 core transport/session library with verification-oriented design."
 repository = "https://github.com/asterinas/tpm-core"
 homepage = "https://github.com/CaiYufan-NUS/asterinas-tpm-verus"
