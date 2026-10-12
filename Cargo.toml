@@ -1,0 +1,22 @@
+[package]
+name = "tpm-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "TPM 2.0 core transport/session library with verification-oriented design."
+repository = "https://github.com/CaiYufan-NUS/asterinas-tpm-verus"
+homepage = "https://github.com/CaiYufan-NUS/asterinas-tpm-verus"
+documentation = "https://docs.rs/tpm-core"
+readme = "README.md"
+keywords = ["tpm", "tpm2", "security", "kernel", "no-std"]
+categories = ["embedded", "cryptography", "no-std"]
+exclude = ["target/*", ".git/*"]
+
+[features]
+default = ["runtime"]
+runtime = []
+
+[dependencies]
+[package.metadata.docs.rs]
+features = ["runtime"]
