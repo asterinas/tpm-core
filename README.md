@@ -2,6 +2,9 @@
 
 `tpm-core` is the runtime-focused TPM 2.0 core crate extracted from the Asterinas TPM stack.
 
+This crate is the runtime-oriented extraction of the Verus verified version in
+https://github.com/CaiYufan-NUS/asterinas-tpm-verus.
+
 This package is designed for normal Rust users who need TPM transport/session primitives without
 requiring a Verus toolchain.
 
@@ -60,11 +63,6 @@ fn build_transport() -> Xfer<MyPhy> {
     Xfer::new(tis)
 }
 ```
-
-## Publishing Model in This Repository
-
-- `tpm-core`: public crate intended for crates.io publishing.
-- `tpm-core-verus`: internal verification crate, currently `publish = false`.
 
 ## Notes
 
