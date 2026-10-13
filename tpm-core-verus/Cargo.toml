@@ -1,0 +1,24 @@
+[package]
+name = "tpm-core-verus"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Verus-enabled TPM core verification crate for Asterinas internal use."
+readme = "../README.md"
+
+[features]
+default = ["runtime", "verus"]
+runtime = []
+verus = ["dep:vstd"]
+
+[dependencies]
+# heapless = { version = "0.8", default-features = false }
+vstd = { version = "=0.0.0-2026-07-27-0206", optional = true }
+
+# [lints.rust]
+# unexpected_cfgs = { level = "allow", check-cfg = ['cfg(verus_keep_ghost)'] }
+
+[package.metadata.verus]
+verify = true
