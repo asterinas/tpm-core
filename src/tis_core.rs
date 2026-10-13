@@ -9,9 +9,23 @@ pub struct Tis<P: TisPhy> {
     /// This is the only persistent state in this layer. Keeping it separate rather than reading the device
     /// every time is because the property we need to prove is “did the driver forget to return locality?”,
     /// which belongs to the local side and cannot be inferred from the device.
-    pub held: bool,
+    held: bool,
 }
 impl<P: TisPhy> Tis<P> {
+    /// Create a TIS transport state at a specific locality.
+    pub fn new(phy: P, locality: u8) -> Self {
+        Self {
+            phy,
+            locality,
+            held: false,
+        }
+    }
+
+    /// Whether locality is currently held by this transport state.
+    pub fn is_holding_locality(&self) -> bool {
+        self.held
+    }
+
     fn status(&mut self) -> Result<u8, TisErr> {
         let addr = reg_sts(self.locality);
         self.phy.read8(addr)

@@ -11,6 +11,10 @@ pub trait TisPhy {
     /// guarantees that the destination is correct: bytes outside the range remain untouched and the buffer
     /// length is unchanged. Therefore the caller bears the responsibility to ensure `off + n <= out.len()`,
     /// and that is enforced by type checking.
+    ///
+    /// # Panics
+    ///
+    /// Implementations may panic if `off + n > out.len()`.
     fn read_fifo(&mut self, addr: u32, out: &mut [u8], off: usize, n: usize) -> Result<(), TisErr>;
     /// Write `data[off..off + n]` into the data FIFO.
     ///
@@ -19,6 +23,10 @@ pub trait TisPhy {
     /// unchanged”: the latter is false, and pretending otherwise invalidates all reasoning built on it.
     /// The caller must reset the FIFO on any failure path; after reset, the inexactness of this point is
     /// irrelevant.
+    ///
+    /// # Panics
+    ///
+    /// Implementations may panic if `off + n > data.len()`.
     fn write_fifo(&mut self, addr: u32, data: &[u8], off: usize, n: usize) -> Result<(), TisErr>;
     /// Abort the current command and clear the data FIFO.
     ///

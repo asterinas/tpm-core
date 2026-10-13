@@ -55,11 +55,7 @@ impl TisPhy for MyPhy {
 }
 
 fn build_transport() -> Xfer<MyPhy> {
-    let tis = Tis {
-        phy: MyPhy,
-        locality: 0,
-        held: false,
-    };
+     let tis = Tis::new(MyPhy, 0);
     Xfer::new(tis)
 }
 ```
@@ -68,3 +64,31 @@ fn build_transport() -> Xfer<MyPhy> {
 
 This crate is `no_std`. Platform integration must provide correct MMIO/CRB access semantics and
 proper synchronization around each TPM device instance.
+
+## Kernel/Platform Contract
+
+To keep transport behavior safe and predictable, the kernel/platform side must satisfy these contracts:
+
+1. Single-owner access per TPM instance.
+    - Do not issue concurrent commands on the same TPM instance.
+    - Serialize all accesses that share the same register/FIFO window.
+
+2. Correct locality discipline.
+    - Use a valid locality (`0..MAX_LOCALITY`).
+    - Treat locality ownership as transport-internal state; do not modify it outside transport APIs.
+
+3. Correct MMIO semantics.
+    - `read32`/`write32` must map to TPM register accesses with the expected little-endian behavior.
+    - MMIO failures must be reported as `Err(TisErr::Phy)` (or an equivalent `TisErr`) rather than ignored.
+
+4. FIFO bounds discipline.
+    - Callers/implementations must satisfy `off + n <= out.len()` for reads and `off + n <= data.len()` for writes.
+    - Violating these bounds can panic in FIFO implementations.
+
+5. Polling progress assumption.
+    - `delay()` must eventually return and must not block forever.
+    - Timeout behavior is modeled in polling counts, so each poll iteration must be able to make progress.
+
+6. Buffer and framing contract.
+    - Command buffers must carry a self-consistent TPM header length field.
+    - Response buffers must be large enough to hold at least the response header and expected body.

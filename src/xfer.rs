@@ -88,13 +88,11 @@ fn cmd_wf(cmd: &[u8], len: usize) -> bool {
     let d = peek_be32(cmd, 2);
     d as usize == len
 }
-/// The response body (everything after the header) is not shorter than `min_body`.
+/// Returns whether the response body (everything after the header) has at least `min_body` bytes.
 ///
-/// This exists as the **last gate before parsing**: the parser functions assume “sufficient body length” as
-/// a precondition, and if this gate is not closed, out-of-bounds reads would become the caller’s
-/// responsibility instead of a hidden implementation detail of the parser.
+/// This is the last gate before parsing. Parser entry points assume this condition holds.
 pub fn body_at_least(n: usize, min_body: usize) -> bool {
-    n - TPM_HEADER_LEN >= min_body
+    n.checked_sub(TPM_HEADER_LEN).is_some_and(|body| body >= min_body)
 }
 pub struct Xfer<P: TisPhy> {
     pub tis: Tis<P>,
@@ -117,7 +115,7 @@ impl<P: TisPhy> Xfer<P> {
     /// changed), while its own methods have preconditions. The gap must be closed at runtime: check once,
     /// and if the preconditions are not met, return immediately rather than continuing with invalid state.
     pub fn ready(&self) -> bool {
-        self.tis.locality < crate::tis::MAX_LOCALITY && !self.tis.held
+        self.tis.locality < crate::tis::MAX_LOCALITY && !self.tis.is_holding_locality()
     }
     /// Wait `ticks` polling intervals.
     ///

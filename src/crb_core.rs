@@ -14,10 +14,22 @@ pub struct Crb<P: CrbPhy> {
     /// Locality number used by this driver.
     pub locality: u8,
     /// Whether locality has been requested and not yet released.
-    pub held: bool,
+    held: bool,
 }
 
 impl<P: CrbPhy> Crb<P> {
+    pub fn new(phy: P, locality: u8) -> Self {
+        Self {
+            phy,
+            locality,
+            held: false,
+        }
+    }
+
+    pub fn is_holding_locality(&self) -> bool {
+        self.held
+    }
+
     #[inline]
     pub fn wf(&self) -> bool {
         self.locality < MAX_LOCALITY
