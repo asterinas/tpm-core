@@ -92,7 +92,8 @@ fn cmd_wf(cmd: &[u8], len: usize) -> bool {
 ///
 /// This is the last gate before parsing. Parser entry points assume this condition holds.
 pub fn body_at_least(n: usize, min_body: usize) -> bool {
-    n.checked_sub(TPM_HEADER_LEN).is_some_and(|body| body >= min_body)
+    n.checked_sub(TPM_HEADER_LEN)
+        .is_some_and(|body| body >= min_body)
 }
 pub struct Xfer<P: TisPhy> {
     pub tis: Tis<P>,
