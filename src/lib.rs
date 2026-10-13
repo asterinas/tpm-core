@@ -17,12 +17,12 @@ pub mod rsp;
 pub mod table;
 pub mod types;
 
-// 会话授权层：可信密码学规约 -> 授权区编解码 -> 会话状态机
+// Session authorization layer: trusted cryptographic protocol -> authorization-area encoding/decoding -> session state machine
 pub mod auth;
 pub mod crypto;
 pub mod session;
 
-// 硬件层：寄存器语义 -> 物理接触面 -> 硬件状态机
+// Hardware layer: register semantics -> physical interface -> hardware state machine
 pub mod mmio;
 pub mod phy;
 pub mod tis;
@@ -35,30 +35,30 @@ mod crb_phy;
 pub use crb::{CrbErr, MAX_LOCALITY as CRB_MAX_LOCALITY};
 pub use crb_core::Crb;
 pub use crb_phy::CrbPhy;
-// 编排层：长度校验、重传、返回码提取 -> 幽灵账本与链路接合
+// Coordination layer: length validation, retransmission, return-code extraction -> ghost ledger and link integration
 mod link;
 pub mod xfer;
 
-// 授权往返：把「响应必须先过 MAC 校验」变成类型层面的事实
+// Authorized round-trip: turn “the response must pass MAC validation first” into a type-level fact
 mod secure;
 
-// 引导序列：宿主接口自检 -> 启动 -> 自检 -> 容量对账
+// Boot sequence: host interface self-test -> startup -> self-test -> capacity reconciliation
 mod boot;
 
-// 阶段移交：链路在无会话路径与授权路径之间易手，账本一路随行
+// Phase handoff: the link moves between the no-session path and the authorized path while the ledger follows along
 mod handoff;
 
 pub use auth::{AuthErr, RspAuth, SA_CONTINUE_SESSION, SA_DECRYPT, SA_ENCRYPT};
-pub use boot::{Boot, BootErr, Limits, bring_up};
-pub use buf::{BufKind, TPM_HEADER_SIZE, TPM2B_HEADER_SIZE, TpmBuf};
-pub use crypto::{AesCfb, HmacSha256Ctx, NONCE_LEN, NonceSource, SHA256_LEN, Sha256Ctx};
+pub use boot::{bring_up, Boot, BootErr, Limits};
+pub use buf::{BufKind, TpmBuf, TPM2B_HEADER_SIZE, TPM_HEADER_SIZE};
+pub use crypto::{AesCfb, HmacSha256Ctx, NonceSource, Sha256Ctx, NONCE_LEN, SHA256_LEN};
 pub use handoff::{attach, close_ctx, open_ctx, to_auth, to_plain};
 pub use link::{ChipLink, LiveSet};
 pub use mmio::TisMmio;
 pub use phy::TisPhy;
 pub use secure::{Authenticated, CmdLayout, Guarded, SecErr};
 pub use session::{AuthSession, SessionState};
-pub use tis::{MAX_LOCALITY, TisErr};
+pub use tis::{TisErr, MAX_LOCALITY};
 pub use tis_core::Tis;
 pub use types::{TpmRc, TpmTag};
 pub use xfer::{Xfer, XferErr};

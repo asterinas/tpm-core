@@ -1,46 +1,49 @@
 use crate::{auth::*, crypto::*};
 
-/// 会话生命周期。
+/// Session lifecycle.
 ///
-/// `Pending` 用元组变体而非具名字段：带花括号的结构体字面量在 `ensures`
-/// 子句里会被解析成函数体的开始，规约里只要提一次状态就报语法错。元组
-/// 形式写出来是调用式，没有这个歧义。
+/// `Pending` uses a tuple variant rather than named fields: a struct literal with braces in an `ensures`
+/// clause is parsed as the start of the function body, and the specification rejects a state mention if it
+/// appears even once. The tuple form is a call expression and has no such ambiguity.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SessionState {
-    /// 会话可用，等待下一条命令。
+    /// Session is available and waiting for the next command.
     Idle,
-    /// 命令已定型，等待响应。载荷是本会话在授权区里的序号。
+    /// Command has been fixed and is waiting for the response. The payload is the index of this session
+    /// in the authorization area.
     Pending(usize),
-    /// 会话已作废。句柄还需要释放一次，之后本结构不得再参与任何运算。
+    /// Session has been invalidated. Its handle still needs to be released once, and this structure must
+    /// never participate in any further computation after that.
     Closed,
 }
-/// 一个 HMAC 授权会话。
+/// An HMAC authorization session.
 ///
-/// 结构体本身携带密钥材料，因此不实现 `Clone`——多一份副本就多一处需要
-/// 擦除的地方。它也不实现 `Debug`：把会话密钥打进日志是最容易犯、也最难
-/// 察觉的错误之一。
+/// The struct itself carries key material, so it does not implement `Clone` — every extra copy would mean
+/// another place where the secret must be erased. It also does not implement `Debug`: logging the session
+/// key is one of the easiest mistakes to make and the hardest to notice.
 pub struct AuthSession {
     handle: u32,
-    /// 本端本轮 nonce。
+    /// Local nonce for this round.
     our_nonce: [u8; NONCE_LEN],
-    /// 对端最近一轮 nonce。
+    /// Most recent nonce from the peer.
     tpm_nonce: [u8; NONCE_LEN],
     session_key: [u8; SHA256_LEN],
     passphrase: [u8; PASSPHRASE_MAX],
     passphrase_len: usize,
-    /// 本轮命令使用的会话属性。
+    /// Session attributes used in the current command.
     attrs: u8,
-    /// 本轮命令码。响应摘要要用到它，而响应报文里并不携带命令码，所以必须
-    /// 由本端记住——这也正是响应无法被挪用到另一条命令上的原因。
+    /// Current command code. It is needed for the response digest, but the response packet does not carry
+    /// the command code itself, so it must be remembered locally — this is also why a response cannot be
+    /// reused for another command.
     ordinal: u32,
     state: SessionState,
 }
-/// 会话密钥与口令拼成的 HMAC 密钥材料，析构即擦除。
+/// HMAC key material formed by concatenating the session key and passphrase; it is erased on drop.
 ///
-/// [`AuthSession::key_buf`] 每次把结构体里的秘密拷进一块栈缓冲返回，这些
-/// 临时副本和结构体本身一样需要用完即抹。包成带 `Drop` 的类型后，擦除随
-/// 作用域结束自动发生，调用方无需、也无法忘记手动清理——与
-/// [`AuthSession`] 自身的 `Drop` 同一套路。
+/// [`AuthSession::key_buf`] copies the secret out of the struct into a stack buffer each time; these
+/// temporary copies are just like the struct itself and must be wiped immediately after use. By wrapping
+/// them in a `Drop` type, erasure happens automatically when the scope ends, so the caller does not need
+/// to remember to clean up manually — same pattern as [`AuthSession`]’s own `Drop`.
 struct KeyMaterial {
     buf: [u8; KEY_MATERIAL_MAX],
     len: usize,
@@ -57,19 +60,21 @@ impl Drop for KeyMaterial {
     }
 }
 impl AuthSession {
-    /// 本会话的句柄。
+    /// Handle for this session.
     pub fn handle(&self) -> u32 {
         self.handle
     }
-    /// 本端本轮 nonce。返回副本：nonce 不是秘密，但调用方不该借由它改写本结构。
+    /// Local nonce for this round. Returns a copy: nonces are not secret, but callers should not be able to
+    /// mutate the structure through them.
     pub fn our_nonce(&self) -> [u8; NONCE_LEN] {
         self.our_nonce
     }
-    /// 本轮会话属性。
+    /// Session attributes for the current command.
     pub fn attrs(&self) -> u8 {
         self.attrs
     }
-    /// 把会话密钥与口令拼进一块定长缓冲区。返回的 [`KeyMaterial`] 析构即擦除。
+    /// Concatenate the session key and passphrase into a fixed-length buffer. The returned
+    /// [`KeyMaterial`] is erased on drop.
     fn key_buf(&self) -> KeyMaterial {
         let mut buf = [0u8; KEY_MATERIAL_MAX];
         let plen = self.passphrase_len;
@@ -80,10 +85,10 @@ impl AuthSession {
             len: SHA256_LEN + plen,
         }
     }
-    /// 由协商出的共享秘密与双方 nonce 导出会话密钥。
+    /// Derive the session key from the negotiated shared secret and both nonces.
     ///
-    /// 共享秘密只在这一步用到，之后本结构不再持有它——密钥派生是单向的，
-    /// 会话密钥泄露也推不回秘密本身。
+    /// The shared secret is used only here; the struct no longer holds it afterward — key derivation is
+    /// one-way, and leaking the session key does not let the secret be reconstructed.
     pub fn open_session<H: HmacSha256Ctx>(
         handle: u32,
         salt: &[u8],
@@ -103,10 +108,11 @@ impl AuthSession {
             state: SessionState::Idle,
         }
     }
-    /// 设置本轮口令。尾部零字节按规范先行剥除。
+    /// Set the current passphrase. The trailing zero bytes are stripped first, as required by the
+    /// specification.
     ///
-    /// 剥除这一步不能省：同一个口令带不带尾零会算出不同的 MAC，而调用方传
-    /// 进来的往往是定长缓冲区。
+    /// This stripping step cannot be skipped: the same passphrase with or without trailing zero bytes yields
+    /// different MACs, and callers often pass a fixed-length buffer.
     pub fn set_passphrase(&mut self, pw: &[u8]) {
         let mut n = pw.len();
         while n > 0 && pw[n - 1] == 0 {
@@ -115,28 +121,31 @@ impl AuthSession {
         self.passphrase[..n].copy_from_slice(&pw[..n]);
         self.passphrase_len = n;
     }
-    /// 为下一条命令换一枚新 nonce。
+    /// Generate a fresh nonce for the next command.
     ///
-    /// 前置条件 `nonce_gen < rng.draws()` 与后置条件一起构成一条链：每轮的
-    /// nonce 世代严格大于上一轮，因此不可能出现两轮复用同一枚 nonce。取值
-    /// 层面的不可预测性是随机源的责任，不在这里断言。
+    /// The precondition `nonce_gen < rng.draws()` and the postcondition form a chain: each round’s nonce
+    /// generation is strictly greater than the previous one, so the same nonce can never be reused in two
+    /// rounds. The unpredictability of the value is the random source’s responsibility, not this function’s.
     ///
-    /// 属性里强行补上「会话延续」位：会话是跨命令复用的资源，若某一轮忘了置
-    /// 这一位，对端会在该轮结束后单方面销毁它，而本端毫不知情，下一轮的失败
-    /// 点会离真正的原因很远。
+    /// The “continue session” bit is forcibly added to the attributes: a session is a cross-command
+    /// resource, and if a round forgets to set it, the peer will tear the session down unilaterally after
+    /// that round ends, and the local side will remain unaware until the next round fails for a reason far
+    /// removed from the actual cause.
     pub fn begin<R: NonceSource>(&mut self, rng: &mut R, ordinal: u32, attrs: u8) {
         self.our_nonce = rng.nonce();
         self.ordinal = ordinal;
         self.attrs = attrs | SA_CONTINUE_SESSION;
     }
-    /// 算出命令 MAC 并填进授权区。
+    /// Compute the command MAC and write it into the authorization area.
     ///
-    /// 调用时机是**唯一**的：所有参数都已写入之后。参数区哪怕再动一个字节，
-    /// 算出的 MAC 就作废了。若本轮要加密首个参数，加密也必须发生在本函数之
-    /// 前——摘要覆盖的是密文，不是明文。
+    /// This is the only valid call time: after all parameters have been written. If even a single byte in
+    /// the parameter area changes, the MAC becomes invalid. If the current round needs to encrypt the first
+    /// parameter, that encryption must happen before this function — the digest covers ciphertext, not
+    /// plaintext.
     ///
-    /// `names` 是各授权句柄名字的顺序拼接。它由调用方按句柄类型准备：可持久化
-    /// 的对象用「算法标识 ‖ 摘要」形式的名字，其余用四字节句柄本身。
+    /// `names` is the concatenation of the authorization-handle names in order. It is prepared by the caller
+    /// according to handle type: persistent objects use the “algorithm identifier || digest” form, and all
+    /// others use the four-byte handle itself.
     pub fn finalize<S: Sha256Ctx, H: HmacSha256Ctx>(
         &mut self,
         buf: &mut [u8],
@@ -154,17 +163,19 @@ impl AuthSession {
         patch_hmac(buf, sess_off, &mac);
         self.state = SessionState::Pending(index);
     }
-    /// 校验响应 MAC。
+    /// Validate the response MAC.
     ///
-    /// **这是本模块存在的理由。** 返回 `Ok` 意味着：报文里那段 MAC 与用本会话
-    /// 密钥、本轮两枚 nonce、本轮命令码重算出来的值逐字节相同。后置条件把这句
-    /// 话原样写了出来，所以任何绕过校验直接采信响应的写法都通不过。
+    /// **This is the reason this module exists.** Returning `Ok` means the MAC in the packet is byte-for-byte
+    /// identical to the value recomputed using this session’s key, the two nonces for this round, and the
+    /// command code for this round. The postcondition states this explicitly, so any implementation that
+    /// bypasses validation and trusts the response directly will fail verification.
     ///
-    /// 命令码取自本端记录而非报文——响应报文根本不携带命令码。这一点让「把甲
-    /// 命令的响应塞给乙命令」这类挪用在摘要层面就对不上。
+    /// The command code is taken from local state rather than from the packet — the response packet does not
+    /// carry the command code at all. This is why “put the response for command A into command B” is a
+    /// replay that fails at the digest layer.
     ///
-    /// 任何一条失败路径都把会话置为作废。会话失败之后继续用同一把密钥重试，
-    /// 等于给对面多一次猜测机会。
+    /// Any failure path marks the session as closed. Retrying the same session with the same key after a
+    /// failure would give the peer another chance to guess.
     pub fn check_response<S: Sha256Ctx, H: HmacSha256Ctx>(
         &mut self,
         raw: &[u8],
@@ -212,19 +223,21 @@ impl AuthSession {
         self.state = SessionState::Idle;
         Ok(a)
     }
-    /// 主动作废会话。错误处理路径绕过 [`AuthSession::check_response`] 时用它收尾。
+    /// Close the session immediately. Used as the cleanup path when error handling bypasses
+    /// [`AuthSession::check_response`].
     pub fn close(&mut self) {
         self.state = SessionState::Closed;
     }
 }
 impl Drop for AuthSession {
-    /// 析构即擦除密钥材料。
+    /// Erase key material on destruction.
     ///
-    /// `session_key` 与 `passphrase` 是本结构仅有的秘密。`fill(0)` 之后插一道
-    /// `compiler_fence`，阻止编译器以"反正马上要释放"为由把这些写入消掉
-    /// （dead-store elimination）。这不等同于 `zeroize` 的逐字节 volatile 写，
-    /// 但在不给验证核引入任何依赖的前提下，是能做到的最强保证；也正是本结构
-    /// 刻意不实现 `Clone` 的配套——只有一份副本，就只有这一处需要擦。
+    /// `session_key` and `passphrase` are the only secrets in this structure. After `fill(0)`, we insert a
+    /// `compiler_fence` to stop the compiler from removing those writes on the grounds that “the object is
+    /// about to be dropped” (dead-store elimination). This is not equivalent to a bytewise `volatile`
+    /// zeroization, but given the constraint of not introducing verification dependencies, it is the
+    /// strongest guarantee available. This is also why this structure intentionally does not implement
+    /// `Clone`: there is only one copy, so there is only one place that needs erasure.
     fn drop(&mut self) {
         self.session_key.fill(0);
         self.passphrase.fill(0);
@@ -232,11 +245,11 @@ impl Drop for AuthSession {
         core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
     }
 }
-/// 推导本轮参数加解密所需的密钥与初始向量。
+/// Derive the key and IV needed for parameter encryption/decryption in the current round.
 ///
-/// 两枚 nonce 的先后决定了方向：命令方向本端 nonce 在前，响应方向对端 nonce 在
-/// 前。两个方向的材料不同，这正是同一条会话上两个方向不会撞用同一段密钥流的
-/// 原因。
+/// The order of the two nonces determines the direction: in command direction, the local nonce comes
+/// first; in response direction, the peer nonce comes first. The material differs between directions,
+/// which is why the two directions on the same session do not reuse the same keystream.
 pub fn cfb_material<H: HmacSha256Ctx>(
     session: &AuthSession,
     newer: &[u8; NONCE_LEN],
@@ -246,12 +259,13 @@ pub fn cfb_material<H: HmacSha256Ctx>(
     let key = km.as_slice();
     kdfa32::<H>(key, &LABEL_CFB[..], &newer[..], &older[..])
 }
-/// 原地加密命令的首个参数。必须在 [`AuthSession::finalize`] 之前调用。
+/// Encrypt the first parameter in place. Must be called before [`AuthSession::finalize`].
 pub fn encrypt_param<A: AesCfb>(aes: &A, material: &[u8; CFB_MATERIAL_LEN], param: &mut [u8]) {
     aes.encrypt(material, param);
 }
-/// 原地解密响应的首个参数。必须在 [`AuthSession::check_response`] 返回 `Ok` 之后
-/// 调用——对未经校验的字节做解密，等于把对端塞进来的任意数据当成明文交给上层。
+/// Decrypt the first parameter in place. Must be called only after [`AuthSession::check_response`] returns
+/// `Ok` — decrypting unvalidated bytes is equivalent to treating arbitrary peer-provided data as plain
+/// text for the upper layer.
 pub fn decrypt_param<A: AesCfb>(aes: &A, material: &[u8; CFB_MATERIAL_LEN], param: &mut [u8]) {
     aes.decrypt(material, param);
 }

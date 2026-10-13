@@ -1,52 +1,59 @@
 use crate::{
-    auth::{AuthErr, RspAuth, write_cmd_session},
+    auth::{write_cmd_session, AuthErr, RspAuth},
     chip::MSG_MAX,
     crypto::{HmacSha256Ctx, NonceSource, Sha256Ctx},
     phy::TisPhy,
     session::AuthSession,
-    xfer::{RC_SUCCESS, Xfer, XferErr},
+    xfer::{Xfer, XferErr, RC_SUCCESS},
 };
 
-/// 一条带授权的命令在缓冲区里的分区。
+/// Partition of an authorized command within the buffer.
 ///
-/// 由调用方给出而不是由本层推算：分区取决于具体命令有几个句柄、参数怎么排，
-/// 那是命令层的知识。本层只负责**核对这些分区互不冲突**，然后照着填。
+/// This is provided by the caller rather than inferred by this layer: the partition depends on how
+/// many handles the command has and how its parameters are arranged, which is command-layer
+/// knowledge. This layer is responsible only for checking that these partitions do not overlap and
+/// then filling them in.
 pub struct CmdLayout {
-    /// 命令总长度。必须与报文头里的长度字段一致，这一点由链路层复核。
+    /// Total command length. It must match the length field in the packet header; this is checked by
+    /// the link layer.
     pub len: usize,
-    /// 授权区起点。
+    /// Start of the authorization area.
     pub sess_off: usize,
-    /// 本会话在授权区里的序号。
+    /// This session's index within the authorization area.
     pub index: usize,
-    /// 参数区起点。
+    /// Start of the parameter area.
     pub param_off: usize,
-    /// 参数区长度。
+    /// Length of the parameter area.
     pub param_len: usize,
-    /// 响应里的句柄个数。摘要覆盖的是句柄之后的部分，数错一个，整段偏移全错。
+    /// Number of handles in the response. The digest covers the portion after the handles, and if this
+    /// count is wrong, the entire offset layout becomes wrong.
     pub rhandles: usize,
 }
-/// 一枚「这段响应的 MAC 已经对上」的凭证。
+/// A credential certifying that “this response MAC matches”.
 ///
-/// 定位结果 `a` 可以公开：读几个偏移不构成任何能力，能力在于凭证本身——
-/// 只有 [`Guarded::invoke`] 校验通过后才会铸出它，`#[non_exhaustive]` 则保证
-/// 模块外无法凭空构造一枚。
+/// The location result `a` can be made public: reading a few offsets does not create any capability; the
+/// capability lies in the credential itself. The credential is created only after [`Guarded::invoke`]
+/// validates successfully, and `#[non_exhaustive]` prevents external code from constructing one out of
+/// thin air.
 #[non_exhaustive]
 pub struct Authenticated {
     pub a: RspAuth,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SecErr {
-    /// 字节没能走完一个来回。
+    /// Bytes did not complete a full round trip.
     Bus(XferErr),
-    /// 器件返回了非零返回码。这类响应不带授权区，无从校验。
+    /// The device returned a non-zero return code. This type of response has no authorization area and
+    /// cannot be validated.
     Rc(u32),
-    /// 响应到了，但授权校验没过。
+    /// The response arrived, but authorization validation failed.
     Auth(AuthErr),
 }
 pub struct Guarded<P: TisPhy> {
     x: Xfer<P>,
     sess: AuthSession,
-    /// 响应暂存区。本层的全部保证都建立在模块之外拿不到它之上。
+    /// Response buffer. All guarantees of this layer rely on the fact that the caller outside the module
+    /// cannot access it.
     rbuf: [u8; MSG_MAX],
 }
 impl<P: TisPhy> Guarded<P> {
@@ -57,14 +64,16 @@ impl<P: TisPhy> Guarded<P> {
             rbuf: [0u8; MSG_MAX],
         }
     }
-    /// 发一条带授权的命令，只有 MAC 对上才返回。
+    /// Send an authorized command; it returns only if the MAC matches.
     ///
-    /// 调用方需要事先把报文头、句柄区、参数区写好，并按 `lay` 留出授权区。
-    /// 授权区由本函数填写——它含有本轮 nonce，而 nonce 要到换取那一刻才产生，
-    /// 调用方提前填不了。
+    /// The caller must have already prepared the packet header, handle area, and parameter area and must
+    /// leave space for the authorization area according to `lay`. The authorization area is filled by
+    /// this function; it contains the current nonce, which is generated only when the round is finalized,
+    /// so the caller cannot fill it in advance.
     ///
-    /// 失败路径一律作废会话。会话失败之后拿同一把密钥重试，等于给对面多一次
-    /// 猜测机会；作废之后要重新握手，代价是一次往返，换来的是猜测机会不累积。
+    /// All failure paths invalidate the session. Retrying with the same key after the session has failed
+    /// gives the peer one more guessing opportunity; invalidating it forces a fresh handshake, which costs
+    /// one round trip but prevents guessing opportunities from accumulating.
     pub fn invoke<S: Sha256Ctx, H: HmacSha256Ctx, R: NonceSource>(
         &mut self,
         rng: &mut R,
@@ -107,25 +116,29 @@ impl<P: TisPhy> Guarded<P> {
         };
         Ok(Authenticated { a })
     }
-    /// 取出响应的参数区。
+    /// Extract the parameter area from the response.
     ///
-    /// 这是响应字节离开本结构体的**唯一出口**。前置条件要出示一枚与当前
-    /// 暂存区内容匹配的凭证：没有凭证拿不到字节，凭证过期也拿不到。
+    /// This is the **only exit** for response bytes from this structure. The precondition requires a
+    /// credential matching the current temporary buffer contents; without a credential, the bytes cannot
+    /// be obtained, and an expired credential also prevents access.
     pub fn params<'a>(&'a self, t: &Authenticated) -> &'a [u8] {
         let off = t.a.param_off;
         let len = t.a.param_len;
         &self.rbuf[off..off + len]
     }
-    /// 响应参数区的长度。凭证已经把它固定下来，读取前不必再解析一次报文。
+    /// Length of the response parameter area. The credential has already fixed this value, so there is
+    /// no need to parse the packet again before reading it.
     pub fn param_len(&self, t: &Authenticated) -> usize {
         t.a.param_len
     }
-    /// 交回链路，结束授权阶段。
+    /// Return the link and end the authorized phase.
     ///
-    /// 会话随 `self` 一起消失，这正是想要的：一个不再持有链路的会话，nonce
-    /// 链条已经断了，留着只会让「拿旧会话继续说话」在类型上看起来可行。
-    /// 响应暂存区一并释放，此前铸出的凭证也就再没有对应的报文可读——那些
-    /// 凭证的前置条件要求报文与铸造时刻逐字节相同，而报文已经不在了。
+    /// The session disappears together with `self`, which is exactly what we want: a session that no
+    /// longer holds the link has a broken nonce chain, and leaving it behind would make it appear
+    /// type-wise valid to keep speaking with an old session.
+    /// The response buffer is released as well, and the previously created credentials no longer have a
+    /// matching packet to read. Their preconditions require the packet to match byte-for-byte the
+    /// contents at creation time, and that packet is no longer present.
     pub fn release(self) -> Xfer<P> {
         self.x
     }

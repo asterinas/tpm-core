@@ -1,14 +1,15 @@
-use crate::crb::{CMD_BUF_CAP, CrbErr, RSP_BUF_CAP};
+use crate::crb::{CrbErr, CMD_BUF_CAP, RSP_BUF_CAP};
 
 // ===========================================================================
-// 物理层：信任基
+// Physical layer: trust boundary
 // ===========================================================================
 //
-// CRB 与硬件之间的唯一接触面。运行时语义由具体后端实现保证。
+// This is the only contact surface between CRB and the hardware. The runtime semantics are guaranteed by
+// the concrete backend implementation.
 
 pub trait CrbPhy {
     // -----------------------------------------------------------------------
-    // 控制区寄存器
+    // Control registers
     // -----------------------------------------------------------------------
 
     fn read32(&mut self, reg: u32) -> Result<u32, CrbErr>;
@@ -16,24 +17,24 @@ pub trait CrbPhy {
     fn write32(&mut self, reg: u32, value: u32) -> Result<(), CrbErr>;
 
     // -----------------------------------------------------------------------
-    // 命令缓冲
+    // Command buffer
     // -----------------------------------------------------------------------
 
-    /// 把 data[0..n] 整块写进命令缓冲头部。
+    /// Write the entire `data[0..n]` block into the command buffer header area.
     fn write_cmd(&mut self, data: &[u8], n: usize) -> Result<(), CrbErr>;
 
-    /// 屏障：确保命令缓冲写入在 START 之前对器件可见。
+    /// Barrier: ensure the command-buffer write is visible to the device before START.
     fn fence(&mut self);
 
     // -----------------------------------------------------------------------
-    // 响应缓冲
+    // Response buffer
     // -----------------------------------------------------------------------
 
-    /// 从响应缓冲 off 处读取 n 字节，写入 out[off..off+n]。
+    /// Read `n` bytes from the response buffer at offset `off` into `out[off..off + n]`.
     fn read_rsp(&mut self, off: usize, out: &mut [u8], n: usize) -> Result<(), CrbErr>;
 
     // -----------------------------------------------------------------------
-    // 节流
+    // Throttling
     // -----------------------------------------------------------------------
 
     fn delay(&mut self);

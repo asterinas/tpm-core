@@ -1,22 +1,23 @@
 use crate::{cursor::*, msg::ParseError};
 
-/// 同时可分配的 PCR bank 数上界。
+/// Upper bound on the number of PCR banks that can be allocated simultaneously.
 const MAX_PCR_BANKS: usize = 5;
-/// 可接受的 `sizeofSelect` 上界。PC Client 平台固定 24 个 PCR（3 字节），
-/// 这里留出余量，但绝不接受对端给出的任意长度。
+/// Accepted upper bound for `sizeofSelect`. The PC Client platform has a fixed 24 PCRs (3 bytes), and
+/// this leaves some margin while rejecting arbitrary lengths from the peer.
 const PCR_SELECT_MAX: usize = 8;
-/// 摘要长度上界（SHA-512）。
+/// Upper bound on digest length (SHA-512).
 const MAX_DIGEST_SIZE: usize = 64;
 const ALG_SHA1: u16 = 0x0004;
 const ALG_SHA256: u16 = 0x000B;
 const ALG_SHA384: u16 = 0x000C;
 const ALG_SHA512: u16 = 0x000D;
 const ALG_SM3_256: u16 = 0x0012;
-/// 已知算法的摘要长度。
+/// Length of a known algorithm’s digest.
 ///
-/// 返回 `0` 表示"本实现不认识这个算法"——不是错误，只是长度需要另行
-/// 探测（读一次 PCR 0 即可）。把未知算法当成错误会让驱动在启用了新
-/// 摘要算法的设备上直接拒绝工作，代价过大。
+/// Returning `0` means “this implementation does not recognize the algorithm” — not an error, but a
+/// signal that the length must be probed separately (by reading PCR 0 once). Treating an unknown
+/// algorithm as an error would cause the driver to refuse to work on devices that enable new digest
+/// algorithms, which is too costly.
 fn digest_size_of(alg_id: u16) -> u16 {
     if alg_id == ALG_SHA1 {
         20
@@ -32,9 +33,9 @@ fn digest_size_of(alg_id: u16) -> u16 {
         0
     }
 }
-/// 解析 `TPM2_GetCapability(TPM_CAP_TPM_PROPERTIES)` 的返回值。
+/// Parse the return value of `TPM2_GetCapability(TPM_CAP_TPM_PROPERTIES)`.
 ///
-/// 载荷布局（Part 3 §30.2）：
+/// Payload layout (Part 3 §30.2):
 ///
 /// ```text
 /// moreData      u8
@@ -43,8 +44,9 @@ fn digest_size_of(alg_id: u16) -> u16 {
 /// [property u32, value u32] * count
 /// ```
 ///
-/// 计数为零是合法响应（对端处于固件升级模式时会这样答），但调用方拿
-/// 不到值，所以按"无数据"报错而不是返回一个凭空捏造的零。
+/// A count of zero is a legal response (for example, when the peer is in firmware-upgrade mode), but the
+/// caller cannot use any value from it, so this is treated as “no data” rather than returning a fabricated
+/// zero.
 pub(crate) fn parse_tpm_property(body: &[u8]) -> Result<u32, ParseError> {
     let mut c = Cursor::new();
     c.read_u8(body).ok_or(ParseError::Truncated)?;
@@ -56,9 +58,10 @@ pub(crate) fn parse_tpm_property(body: &[u8]) -> Result<u32, ParseError> {
     c.read_be32(body).ok_or(ParseError::Truncated)?;
     c.read_be32(body).ok_or(ParseError::Truncated)
 }
-/// 已分配的 PCR bank 表。
+/// Table of allocated PCR banks.
 ///
-/// `digest_sizes[i] == 0` 表示该 bank 的算法本实现不认识，长度待探测。
+/// `digest_sizes[i] == 0` means that the implementation does not recognize the algorithm for that bank,
+/// and the length must be probed separately.
 pub struct PcrBanks {
     pub algs: [u16; 5],
     pub digest_sizes: [u16; 5],
@@ -73,23 +76,23 @@ impl PcrBanks {
         }
     }
 }
-/// 解析 `TPM2_GetCapability(TPM_CAP_PCRS)`，得出实际分配了哪些 bank。
+/// Parse `TPM2_GetCapability(TPM_CAP_PCRS)` and determine which banks are actually allocated.
 ///
-/// 载荷布局：
+/// Payload layout:
 ///
 /// ```text
 /// moreData   u8
 /// capability u32          == TPM_CAP_PCRS
-/// count      u32          候选 bank 数
+/// count      u32          number of candidate banks
 /// [hashAlg u16, sizeofSelect u8, pcrSelect u8[sizeofSelect]] * count
 /// ```
 ///
-/// 一个 bank 只有在选择位图存在非零位时才算已分配；位图全零表示该算法
-/// 只是被支持、并未启用。
+/// A bank counts as allocated only if its selection bitmap contains at least one non-zero bit; a bitmap of
+/// all zeros means the algorithm is supported but not active.
 ///
-/// 三处上界是这个函数的全部安全论据：`count <= MAX_PCR_BANKS` 限住循环
-/// 轮数，`sizeofSelect <= PCR_SELECT_MAX` 限住每轮步长，游标的
-/// `read_bytes` 限住位图取值——三者都在使用之前完成检查。
+/// Three upper bounds constitute the entire safety argument of this function: `count <= MAX_PCR_BANKS`
+/// limits the loop iterations, `sizeofSelect <= PCR_SELECT_MAX` limits the per-iteration stride, and the
+/// cursor’s `read_bytes` checks the bitmap value — all three are validated before use.
 pub fn parse_pcr_allocation(body: &[u8]) -> Result<PcrBanks, ParseError> {
     let mut c = Cursor::new();
     c.read_u8(body).ok_or(ParseError::Truncated)?;
@@ -116,14 +119,14 @@ pub fn parse_pcr_allocation(body: &[u8]) -> Result<PcrBanks, ParseError> {
     }
     Ok(banks)
 }
-/// 一次 PCR 读取的结果：算法标识 + 摘要字节。
+/// Result of a single PCR read: algorithm ID + digest bytes.
 pub struct PcrValue<'a> {
     pub alg_id: u16,
     pub digest: &'a [u8],
 }
-/// 解析 `TPM2_PCR_Read` 响应（Part 3 §22.4）。
+/// Parse a `TPM2_PCR_Read` response (Part 3 §22.4).
 ///
-/// 载荷布局：
+/// Payload layout:
 ///
 /// ```text
 /// pcrUpdateCounter u32
@@ -131,8 +134,8 @@ pub struct PcrValue<'a> {
 /// pcrValues        count u32, [size u16, buffer[size]] * count
 /// ```
 ///
-/// 只接受"一个选择、一个摘要"的形态——这正是命令侧构造的请求所对应的
-/// 响应。对端多答的部分不去猜测其含义，直接拒绝。
+/// Only the “one selection, one digest” form is accepted — this matches the request constructed by the
+/// command side. Any extra response content from the peer is not guessed, and is rejected outright.
 pub fn parse_pcr_read(body: &[u8]) -> Result<PcrValue<'_>, ParseError> {
     let mut c = Cursor::new();
     c.read_be32(body).ok_or(ParseError::Truncated)?;
@@ -161,10 +164,11 @@ pub fn parse_pcr_read(body: &[u8]) -> Result<PcrValue<'_>, ParseError> {
         .ok_or(ParseError::Truncated)?;
     Ok(PcrValue { alg_id, digest })
 }
-/// 解析 `TPM2_GetRandom` 响应（Part 3 §16.1）：一个 `TPM2B_DIGEST`。
+/// Parse a `TPM2_GetRandom` response (Part 3 §16.1): a single `TPM2B_DIGEST`.
 ///
-/// 返回借用而非拷贝。要多少字节由调用方按 `max` 自行裁剪，本层只保证
-/// 返回的切片确实落在载荷内、且长度不超过对端声明的值。
+/// This returns a borrowed slice rather than copying. The caller decides how many bytes to trim using
+/// `max`; this layer only guarantees that the returned slice is within the payload and does not exceed the
+/// length declared by the peer.
 pub fn parse_random(body: &[u8], max: u16) -> Result<&[u8], ParseError> {
     let mut c = Cursor::new();
     let size = c.read_be16(body).ok_or(ParseError::Truncated)?;

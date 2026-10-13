@@ -1,13 +1,13 @@
 // ===========================================================================
-// 建模范围
+// Modeling scope
 // ===========================================================================
 //
-// 本层按 TCG PTP 的 CRB 2.0 控制区寄存器语义建模，只覆盖 memory-mapped /
-// command-buffer 启动方式：命令触发为写 ctrl_start 的 INVOKE 位，完成为器件
-// 自清该位。
+// This layer models the CRB 2.0 control-area register semantics according to TCG PTP and covers only
+// the memory-mapped / command-buffer startup mode: commands are triggered by writing the INVOKE bit in
+// ctrl_start, and completion is signaled when the device clears that bit itself.
 
 // ===========================================================================
-// 控制区寄存器偏移
+// Control register offsets
 // ===========================================================================
 
 pub(crate) const REG_LOC_STATE: u32 = 0x0000;
@@ -20,7 +20,7 @@ pub(crate) const REG_CTRL_CMD_SIZE: u32 = 0x0058;
 pub const REG_CTRL_RSP_SIZE: u32 = 0x0064;
 
 // ===========================================================================
-// 寄存器位
+// Register bits
 // ===========================================================================
 
 pub(crate) const LOC_CTRL_REQUEST: u32 = 0x01;
@@ -39,49 +39,53 @@ pub(crate) const CTRL_START_INVOKE: u32 = 0x01;
 pub(crate) const CTRL_CANCEL_CLEAR: u32 = 0x00;
 
 // ===========================================================================
-// 缓冲区映射上界
+// Buffer mapping upper bounds
 // ===========================================================================
 
 pub(crate) const CMD_BUF_CAP: usize = 4096;
 pub(crate) const RSP_BUF_CAP: usize = 4096;
 
 // ===========================================================================
-// locality 取值范围
+// locality value range
 // ===========================================================================
 
 pub const MAX_LOCALITY: u8 = 5;
 
 // ===========================================================================
-// 轮询预算
+// Polling budget
 // ===========================================================================
 
 pub const POLL_INTERVAL_MS: u32 = 1;
 
-/// 握手类动作（locality、cmd_ready、go_idle）的超时。
+/// Timeout for handshake actions (locality, cmd_ready, go_idle).
 pub const TIMEOUT_C_MS: u32 = 750;
 
-/// 命令执行完成的超时。
+/// Timeout for command completion.
 pub(crate) const TIMEOUT_LONG_MS: u32 = 4000;
 
-/// 把毫秒超时折算成轮询次数，至少返回 1。
+/// Convert millisecond timeout to polling count, returning at least 1.
 #[inline]
 pub fn budget_of(timeout_ms: u32) -> u32 {
     let n = timeout_ms / POLL_INTERVAL_MS;
-    if n == 0 { 1 } else { n }
+    if n == 0 {
+        1
+    } else {
+        n
+    }
 }
 
 // ===========================================================================
-// 错误
+// Errors
 // ===========================================================================
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CrbErr {
-    /// 物理层报错。总线本身出了问题。
+    /// Physical-layer error. The bus itself is malfunctioning.
     Phy,
-    /// 轮询预算耗尽。
+    /// Polling budget exhausted.
     Timeout,
-    /// 器件状态与规范不符。
+    /// Device state does not match the specification.
     Protocol,
-    /// 命令或响应长度非法。
+    /// Command or response length is invalid.
     BadLength,
 }

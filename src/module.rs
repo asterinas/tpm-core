@@ -1,7 +1,7 @@
 pub use crate::{
     handle::{
-        SLOTS, is_session_exec as is_session, is_transient_exec as is_transient,
-        valid_phandle_exec as valid_phandle,
+        is_session_exec as is_session, is_transient_exec as is_transient,
+        valid_phandle_exec as valid_phandle, SLOTS,
     },
     rewrite::{HeaderOutcome, SpaceErr},
     table::{CtxSlot, SpaceTable},
@@ -9,52 +9,54 @@ pub use crate::{
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum IoErr {
-    /// 目标已不存在：上下文被外部释放，或计数器不匹配。可恢复——
-    /// 对应槽位直接遗忘即可。
+    /// The target no longer exists: the context was externally released or the counter no longer
+    /// matches. Recoverable — the corresponding slot can simply be forgotten.
     NotFound,
-    /// 备份数据完整性校验失败。
+    /// Backup data integrity check failed.
     Integrity,
-    /// 备份缓冲区放不下。
+    /// The backup buffer is too small.
     NoSpace,
-    /// 轮询预算耗尽，纯粹的等待超时，值得按退避策略重试。
+    /// Polling budget exhausted; pure wait timeout, worth retrying with backoff.
     Timeout,
-    /// 物理总线故障，重试没有意义。
+    /// Physical bus failure; retries are pointless.
     Bus,
-    /// 芯片返回的东西违反协议约定（长度、状态位与规范不符）。
+    /// The chip returned data that violates protocol conventions (length, status bits, or specification
+    /// mismatches).
     Protocol,
-    /// 调用方交下来的命令本身不自洽（长度字段与缓冲区对不上）。
-    /// 这是编码层的逻辑错误，不是设备故障。
+    /// The command the caller passed is internally inconsistent (length field does not match the buffer).
+    /// This is a coding-layer logic error, not a device fault.
     BadCommand,
-    /// 调用时序错误：接口在不满足前提的状态下被调用。
+    /// Calling-order error: the interface was called when its preconditions were not satisfied.
     NotReady,
-    /// 表与芯片状态已经无法调和的内部不变量破裂，唯一安全动作是
-    /// 整体清空重来。
+    /// The internal invariant between the table and chip state has already been broken; the only safe
+    /// action is to clear everything and start over.
     Fatal,
 }
-/// 上下文存取的抽象接口。
+/// Abstract interface for context access.
 ///
-/// 实现由外层提供：它内部会做报文构造、传输、返回码分类，那些属于编解码
-/// 层的职责。本模块只依赖这里写下的前后置条件。
+/// Implementations are provided by the outer layer; they build the request/response packets and classify
+/// return codes, which are the responsibilities of the encoding/decoding layer. This module depends only
+/// on the preconditions and postconditions written here.
 pub trait ContextIo {
-    /// 从 `blob[off..]` 装载一份上下文，返回新句柄与消耗的字节数。
+    /// Load a context from `blob[off..]` and return the new handle plus the number of bytes consumed.
     fn load(&mut self, blob: &[u8], off: usize) -> Result<(u32, usize), IoErr>;
-    /// 把 `h` 的上下文保存到 `out[off..]`，返回写入字节数。
+    /// Save the context for `h` into `out[off..]` and return the number of bytes written.
     ///
-    /// 保存本身不释放句柄，释放要显式调用 [`ContextIo::flush`]。
+    /// Saving itself does not release the handle; release must be done explicitly via [`ContextIo::flush`].
     fn save(&mut self, h: u32, out: &mut [u8], off: usize) -> Result<usize, IoErr>;
-    /// 释放芯片上的句柄。幂等，不返回错误——释放失败无从补救，
-    /// 且调用点全在错误处理路径上。
+    /// Release a handle on the chip. Idempotent, no error return — if release fails, there is no
+    /// recovery path, and the call sites are all on error-handling paths.
     fn flush(&mut self, h: u32);
 }
-/// 使用者可见的句柄空间。备份缓冲区不放在这里——本层不做分配，
-/// 由外层按需提供切片。
+/// User-visible handle space. The backup buffers are not stored here — this layer does not perform
+/// allocation and relies on the outer layer to provide slices as needed.
 pub struct Space {
     tbl: SpaceTable,
 }
-/// 一次请求期间的工作副本。只有 [`Space::commit`] 会把它写回。
+/// A working copy for a single request. Only [`Space::commit`] writes it back.
 ///
-/// 没有实现 `Clone`，也没有公开构造函数：拿到它的唯一途径是
-/// [`Space::begin`]，丢弃它的唯一后果就是回滚。
+/// It does not implement `Clone`, and there is no public constructor: the only way to obtain it is
+/// [`Space::begin`], and the only consequence of dropping it is rollback.
 pub struct Transaction {
     work: SpaceTable,
 }
@@ -73,11 +75,11 @@ impl Default for Space {
 }
 
 impl Space {
-    /// 取一份工作副本。使用者可见的状态在此期间保持不变。
+    /// Take a working copy. The user-visible state remains unchanged during this period.
     pub fn begin(&self) -> Transaction {
         Transaction { work: self.tbl }
     }
-    /// 把工作副本写回。只在整条路径都成功时调用。
+    /// Write the working copy back. Only called when the entire path succeeds.
     pub fn commit(&mut self, t: Transaction) {
         self.tbl = t.work;
     }
@@ -86,17 +88,19 @@ impl Transaction {
     pub fn table(&mut self) -> &mut SpaceTable {
         &mut self.work
     }
-    /// 事务失败时的收尾：释放芯片上的残留，然后丢弃副本。
+    /// Cleanup after transaction failure: release residual handles on the chip, then discard the copy.
     ///
-    /// 取走 `self` 而不是借用——收尾之后这个事务不可能再被提交。
+    /// `self` is taken by value instead of borrowed — after cleanup, this transaction can no longer be
+    /// committed.
     pub fn abort<I: ContextIo>(self, io: &mut I) {
         let mut t = self;
         flush_all(&mut t.work, io);
     }
 }
-/// 释放表中所有活跃句柄与所有会话，并清空两张表。
+/// Release all live handles and all sessions from the table and clear both tables.
 ///
-/// 这是错误路径的收尾动作：调用之后芯片上不再残留本 space 的任何东西。
+/// This is the cleanup action on error paths: after this call, no residual state from this space remains
+/// on the chip.
 fn flush_all<I: ContextIo>(tbl: &mut SpaceTable, io: &mut I) {
     for i in 0..SLOTS {
         if let CtxSlot::Live(h) = tbl.slot_at(i) {
@@ -112,13 +116,14 @@ fn flush_all<I: ContextIo>(tbl: &mut SpaceTable, io: &mut I) {
         }
     }
 }
-/// 把备份缓冲区里的上下文全部装载回芯片。
+/// Load all contexts from the backup buffers back onto the chip.
 ///
-/// 成功返回后表中不再有「已保存」状态的槽位——每个非空槽位都对应一个
-/// 芯片上真实存在的句柄。
+/// On success, no slot remains in the “saved” state — every non-empty slot corresponds to a real handle
+/// that exists on the chip.
 ///
-/// 会话的处理与对象不同：装载失败的会话被直接遗忘（清空槽位）而不是
-/// 让整个操作失败。会话本来就可能被外部释放，这是正常情形。
+/// Session handling differs from objects: failed session loads are simply forgotten (the slot is cleared)
+/// instead of causing the entire operation to fail. Sessions may legitimately disappear due to external
+/// release, and that is considered normal.
 pub fn load_space<I: ContextIo>(
     tbl: &mut SpaceTable,
     io: &mut I,
@@ -168,10 +173,10 @@ pub fn load_space<I: ContextIo>(
     }
     Ok(())
 }
-/// 把芯片上属于本 space 的东西全部保存回备份缓冲区并释放。
+/// Save all transient objects belonging to this space back into the backup buffers and release them.
 ///
-/// 成功返回后表中不再有活跃槽位，芯片上不再持有本 space 的瞬态对象——
-/// 这正是「事务结束后芯片是干净的」这条性质。
+/// On success, there are no live slots left in the table and no transient objects from this space remain
+/// held on the chip — this is exactly the property that “the chip is clean after the transaction ends”.
 pub fn save_space<I: ContextIo>(
     tbl: &mut SpaceTable,
     io: &mut I,

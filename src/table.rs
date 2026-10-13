@@ -1,19 +1,19 @@
 use super::handle::*;
 
-/// 上下文表的槽位状态。
+/// Slot state in the context table.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CtxSlot {
-    /// 空闲槽位。
+    /// Free slot.
     Empty,
-    /// 对象内容已保存到备份缓冲区，芯片上无对应句柄。
+    /// Object contents have been saved to the backup buffer; there is no matching handle on the chip.
     Saved,
-    /// 槽位持有一个活跃的物理句柄。
+    /// The slot holds an active physical handle.
     Live(u32),
 }
 #[derive(Clone, Copy)]
 pub struct SpaceTable {
     ctx: [CtxSlot; SLOTS],
-    /// `0` 表示空槽。
+    /// `0` means an empty slot.
     sessions: [u32; SLOTS],
 }
 impl SpaceTable {
@@ -32,7 +32,8 @@ impl Default for SpaceTable {
 }
 
 impl SpaceTable {
-    /// 把槽位置为空闲或已保存。这两种状态不携带句柄，永远不破坏不变量。
+    /// Mark the slot as empty or saved. These two states do not carry a handle and never violate the
+    /// invariant.
     pub fn set_slot_free(&mut self, i: usize, saved: bool) {
         self.ctx[i] = if saved {
             CtxSlot::Saved
@@ -40,15 +41,15 @@ impl SpaceTable {
             CtxSlot::Empty
         };
     }
-    /// 把槽位置为活跃。要求句柄合法且未被登记过。
+    /// Mark the slot as live. Requires the handle to be valid and not already registered.
     ///
-    /// 「未被登记过」是前置条件而不是运行时检查：调用点（`intern`、
-    /// 装载路径）本来就已经查过一遍表，再查一次纯属浪费。单射性由此
-    /// 条前置条件承接，不引入任何信任假设。
+    /// “Not already registered” is a precondition rather than a runtime check: the call sites (`intern`,
+    /// load path) already inspected the table once, and checking again would be wasted work. The injective
+    /// property is carried by this precondition without introducing any trust assumption.
     pub fn set_slot_live(&mut self, i: usize, p: u32) {
         self.ctx[i] = CtxSlot::Live(p);
     }
-    /// 虚拟句柄 → 物理句柄。
+    /// Virtual handle → physical handle.
     pub fn resolve(&self, v: u32) -> Option<u32> {
         if !is_transient_exec(v) {
             return None;
@@ -62,23 +63,24 @@ impl SpaceTable {
             _ => None,
         }
     }
-    /// 物理句柄 → 虚拟句柄，仅查询，不分配。
+    /// Physical handle → virtual handle, query-only and no allocation.
     pub fn lookup(&self, p: u32) -> Option<u32> {
         self.ctx
             .iter()
             .position(|&slot| slot == CtxSlot::Live(p))
             .map(vhandle_of_exec)
     }
-    /// 为物理句柄分配一个空闲槽位，返回对应虚拟句柄。
+    /// Allocate an empty slot for a physical handle and return the corresponding virtual handle.
     ///
-    /// 表满时返回 `None`；此时调用方**有义务**把这个物理句柄在芯片上释放，
-    /// 否则它会一直占着芯片资源且再也无法被引用。
+    /// Returns `None` when the table is full; in that case the caller is obligated to release the physical
+    /// handle on the chip, or it will continue to occupy chip resources and can never be referenced again.
     pub fn intern(&mut self, p: u32) -> Option<u32> {
         let i = self.ctx.iter().position(|&slot| slot == CtxSlot::Empty)?;
         self.set_slot_live(i, p);
         Some(vhandle_of_exec(i))
     }
-    /// 登记一个会话句柄。表满时返回 `false`，调用方同样负有释放义务。
+    /// Register a session handle. Returns `false` when the table is full; the caller also has the release
+    /// obligation in that case.
     pub fn add_session(&mut self, h: u32) -> bool {
         match self.sessions.iter_mut().find(|slot| **slot == 0) {
             Some(slot) => {

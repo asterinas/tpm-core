@@ -1,32 +1,36 @@
-//! 定长命令缓冲区。
+//! Fixed-size command buffer.
 //!
-//! yufan：**本类型当前不在命令拼装路径上。** 引导阶段的命令由 `boot` 就地写进
-//! 自己的定长暂存区,带授权的命令由 `secure::CmdLayout` 描述分区,两条路
-//! 都不经过这里。它保留下来是因为「先写载荷、再回填长度」这种拼装方式
-//! 迟早会有需要,而不是因为有现成的调用方。
+//! yufan: The commands used in the
+//! boot phase are written directly into the fixed-size temporary buffer by `boot`, while commands
+//! with authorization are described by partitions in `secure::CmdLayout`; neither path goes through
+//! here. It remains because the “write the payload first, then fill in the length later” assembly
+//! pattern is bound to be needed eventually, not because there is already a caller for it.
 //!
-//! 因此在给它找到确定用途之前,新命令请照着上述两条路写,不要以它为样板:
-//! 它的错误模型是 `overflow` / `boundary_error` 两个粘滞标志、末尾统一收,
-//! 与其余各层就地返回 `Result` 的做法不是一回事;字节序也走 `endian`
-//! 而非 `cursor`。两种做法并存已经够了,不宜再多一处。
+//! Therefore, before we assign it a definite purpose, new commands should be written along the two
+//! paths above and not modeled on this one: its error model is the sticky flags `overflow` and
+//! `boundary_error` with a final uniform collection, which is not the same as the rest of the layers
+//! returning `Result` inline; its byte order also follows `endian` rather than `cursor`. Having both
+//! approaches coexist is already enough; there should not be a third one.
 
 use crate::{endian::*, types::TpmTag};
 
-/// `struct tpm_header` 的大小：tag(2) + length(4) + ordinal/return_code(4)。
+/// Size of `struct tpm_header`: tag (2) + length (4) + ordinal/return_code (4).
 pub const TPM_HEADER_SIZE: usize = 10;
-/// TPM2B 首部：仅一个 16 位 size 字段。
+/// TPM2B header: a single 16-bit size field.
 pub const TPM2B_HEADER_SIZE: usize = 2;
-/// 内核胶水层应把它重新实现为页分配并 **Box 化**，避免 4 KiB 落在内核栈上；
-/// 这里的默认实现只用于 host 侧差分测试。
+/// The kernel glue layer should reimplement this as page allocation and **Box** it to avoid placing a
+/// 4 KiB buffer on the kernel stack; the default implementation here is only for host-side differential
+/// testing.
 fn alloc_zeroed_storage<const N: usize>() -> [u8; N] {
     [0u8; N]
 }
-/// 它与 `overflow`/`boundary_error` 的区别在于：种类在构造时确定、此后不变，
+/// It differs from `overflow`/`boundary_error` in that the kind is fixed at construction time and then
+/// never changes.
 #[derive(Clone, Copy)]
 pub enum BufKind {
-    /// 普通命令缓冲区，首部为 `struct tpm_header`
+    /// Ordinary command buffer with a `struct tpm_header` prefix.
     Command,
-    /// TPM2B 缓冲区，首部为 2 字节 size
+    /// TPM2B buffer with a 2-byte size prefix.
     Tpm2b,
 }
 pub struct TpmBuf<const N: usize> {
@@ -44,7 +48,7 @@ impl<const N: usize> TpmBuf<N> {
     fn put_be32(&mut self, at: usize, v: u32) {
         self.data[at..at + 4].copy_from_slice(&v.to_be_bytes());
     }
-    /// 把 `self.length` 回写进首部的长度字段。
+    /// Write back `self.length` to the length field in the header.
     fn sync_length(&mut self) {
         match self.kind {
             BufKind::Tpm2b => {
@@ -57,7 +61,7 @@ impl<const N: usize> TpmBuf<N> {
             }
         }
     }
-    /// 对应 `tpm_buf_reset()`：在既有存储上原地初始化一条命令。
+    /// Corresponds to `tpm_buf_reset()`: initialize an existing storage area in place as a command.
     pub fn reset_command(&mut self, tag: TpmTag, ordinal: u32) {
         self.kind = BufKind::Command;
         self.overflow = false;
@@ -69,7 +73,7 @@ impl<const N: usize> TpmBuf<N> {
         self.put_be32(2, TPM_HEADER_SIZE as u32);
         self.put_be32(6, ordinal);
     }
-    /// 对应 `tpm_buf_reset_sized()`。
+    /// Corresponds to `tpm_buf_reset_sized()`.
     pub fn reset_sized(&mut self) {
         self.kind = BufKind::Tpm2b;
         self.overflow = false;
@@ -78,7 +82,7 @@ impl<const N: usize> TpmBuf<N> {
         self.length = TPM2B_HEADER_SIZE;
         self.put_be16(0, 0u16);
     }
-    /// 对应 `tpm_buf_init()`：分配 + 初始化。
+    /// Corresponds to `tpm_buf_init()`: allocate + initialize.
     pub fn new_command(tag: TpmTag, ordinal: u32) -> Self {
         let mut buf = TpmBuf {
             data: alloc_zeroed_storage::<N>(),
@@ -91,7 +95,7 @@ impl<const N: usize> TpmBuf<N> {
         buf.reset_command(tag, ordinal);
         buf
     }
-    /// 对应 `tpm_buf_init_sized()`。
+    /// Corresponds to `tpm_buf_init_sized()`.
     pub fn new_sized() -> Self {
         let mut buf = TpmBuf {
             data: alloc_zeroed_storage::<N>(),
@@ -104,7 +108,7 @@ impl<const N: usize> TpmBuf<N> {
         buf.reset_sized();
         buf
     }
-    /// 对应 `tpm_buf_append()`。
+    /// Corresponds to `tpm_buf_append()`.
     pub fn append(&mut self, src: &[u8]) {
         if self.overflow {
             return;
@@ -158,7 +162,7 @@ impl<const N: usize> TpmBuf<N> {
         self.length = start + 4;
         self.sync_length();
     }
-    /// 对应 `tpm_buf_append_handle()`。
+    /// Corresponds to `tpm_buf_append_handle()`.
     pub fn append_handle(&mut self, handle: u32) -> bool {
         if self.is_tpm2b() {
             return false;
@@ -177,7 +181,7 @@ impl<const N: usize> TpmBuf<N> {
         self.handles += 1;
         true
     }
-    /// 对应 `tpm_buf_read_u8()`。
+    /// Corresponds to `tpm_buf_read_u8()`.
     pub fn read_u8(&mut self, offset: &mut usize) -> u8 {
         if self.boundary_error {
             return 0;
@@ -190,7 +194,7 @@ impl<const N: usize> TpmBuf<N> {
         *offset += 1;
         v
     }
-    /// 对应 `tpm_buf_read_u16()`。
+    /// Corresponds to `tpm_buf_read_u16()`.
     pub fn read_u16(&mut self, offset: &mut usize) -> u16 {
         if self.boundary_error {
             return 0;
@@ -205,7 +209,7 @@ impl<const N: usize> TpmBuf<N> {
         *offset = o + 2;
         be16_of_exec(b0, b1)
     }
-    /// 对应 `tpm_buf_read_u32()`。
+    /// Corresponds to `tpm_buf_read_u32()`.
     pub fn read_u32(&mut self, offset: &mut usize) -> u32 {
         if self.boundary_error {
             return 0;
@@ -222,7 +226,7 @@ impl<const N: usize> TpmBuf<N> {
         *offset = o + 4;
         be32_of_exec(b0, b1, b2, b3)
     }
-    /// 对应 `tpm_buf_length()`。
+    /// Corresponds to `tpm_buf_length()`.
     pub fn len(&self) -> usize {
         self.length
     }
@@ -244,7 +248,8 @@ impl<const N: usize> TpmBuf<N> {
     pub fn handle_count(&self) -> u8 {
         self.handles
     }
-    /// 交给传输层的线上字节。**没有溢出时才有意义**，故要求 `!overflow`。
+    /// The raw bytes to hand to the transport layer. **This is meaningful only when there is no
+    /// overflow**, so it requires `!overflow`.
     pub fn as_wire(&self) -> &[u8] {
         &self.data[0..self.length]
     }

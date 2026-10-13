@@ -1,32 +1,34 @@
 use crate::cursor::*;
 
 pub(crate) const TPM_HEADER_LEN: usize = 10;
-/// 无会话响应标签。
+/// Response tag without sessions.
 pub(crate) const ST_NO_SESSIONS: u16 = 0x8001;
-/// 带会话（授权区）响应标签。
+/// Response tag with sessions (authorization area).
 pub const ST_SESSIONS: u16 = 0x8002;
-/// 成功返回码。
+/// Success return code.
 pub const RC_SUCCESS: u32 = 0x0000;
 #[derive(PartialEq, Eq)]
 pub enum ParseError {
-    /// 字节数不足以取出下一个字段。
+    /// Not enough bytes to read the next field.
     Truncated,
-    /// 长度字段与实际字节数不符，或字段取值超出规范允许范围。
+    /// Length field does not match the actual byte count, or a field value exceeds the specification.
     Malformed,
-    /// 计数超出本实现的静态容量上限。
+    /// Count exceeds the static capacity limit of this implementation.
     Capacity,
-    /// 语法合法但本实现不支持（未知算法、未预期的响应形态）。
+    /// The syntax is valid but this implementation does not support it (unknown algorithm, unexpected
+    /// response shape).
     Unsupported,
-    /// TPM 报告了非零返回码。
+    /// TPM reported a non-zero return code.
     TpmError(u32),
 }
-/// 报文头的抽象视图。`code` 在请求方向是命令码，在响应方向是返回码。
+/// Abstract view of a message header. `code` is the command code in request direction and the return
+/// code in response direction.
 pub struct HeaderView {
     pub tag: u16,
     pub size: u32,
     pub code: u32,
 }
-/// 已校验的响应：头部三字段 + 去掉头部的载荷。
+/// A validated response: the three header fields plus the payload without the header.
 pub struct Response<'a> {
     pub tag: u16,
     pub rc: u32,
@@ -37,11 +39,12 @@ impl<'a> Response<'a> {
         self.rc == RC_SUCCESS
     }
 }
-/// 校验并拆解一条响应。
+/// Validate and split a response.
 ///
-/// 拒绝三类输入：长度不足一个头部、`size` 字段与实到字节数不符、
-/// 标签不是两个合法响应标签之一。返回码非零时不再往下解析载荷——
-/// 失败响应的载荷内容按规范是未定义的。
+/// Rejects three kinds of input: length shorter than a header, `size` not matching the actual byte
+/// count, and a tag that is not one of the two valid response tags. If the return code is non-zero, the
+/// payload is no longer parsed — the payload contents of a failure response are undefined by the
+/// specification.
 pub(crate) fn parse_response(raw: &[u8]) -> Result<Response<'_>, ParseError> {
     if raw.len() < TPM_HEADER_LEN {
         return Err(ParseError::Truncated);
@@ -62,10 +65,11 @@ pub(crate) fn parse_response(raw: &[u8]) -> Result<Response<'_>, ParseError> {
     let body = &raw[TPM_HEADER_LEN..raw.len()];
     Ok(Response { tag, rc, body })
 }
-/// 请求头的字节形态。命令载荷由 `cmd` 模块构造，两者拼接即整条请求。
+/// Byte layout of the request header. The command payload is constructed by the `cmd` module, and the
+/// two are concatenated to form the full request.
 ///
-/// `size` 需要在载荷长度确定后回填，因此这里只提供"给定总长度生成
-/// 头部"的纯函数，由缓冲区层在收尾时调用。
+/// `size` must be filled in after the payload length is known, so this module only provides a pure
+/// function that generates the header from a total length; the buffer layer calls it at the end.
 pub(crate) fn build_header(tag: u16, code: u32, total_size: u32) -> [u8; 10] {
     let t = be16_bytes(tag);
     let s = be32_bytes(total_size);

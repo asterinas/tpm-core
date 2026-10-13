@@ -1,23 +1,23 @@
-//! 报文首部字段的类型封装。
+//! Type wrappers for message-header fields.
 //!
-//! yufan：**当前只有 `buf` 用到 `TpmTag`,`TpmRc` 尚无调用方。** 拼装与解析各层
-//! 直接对裸 `u16` / `u32` 操作,把标签和返回码的取值约束写在函数的前后置
-//! 条件里,没有绕道这里。
+//! yufan: **At the moment only `buf` uses `TpmTag` and `TpmRc`; callers do not yet use them.** The
+//! assembly and parsing layers currently operate directly on raw `u16` / `u32` values, writing the tag and
+//! return-code constraints into the function preconditions/postconditions instead of routing through here.
 //!
-//! 留着是为了 `TpmRc` 那件事:返回码与命令码复用报文首部的同一个偏移,
-//! 两者混用同一个裸 `u32` 时写反了不会被任何检查发现。真要收紧,应该是
-//! 让各层改用这个 newtype,而不是反过来把它删掉。
+//! This is kept for the `TpmRc` case: the return code and command code share the same offset in the header,
+//! and if the two are mixed up with the same bare `u32`, no check will catch it. If we tighten things up,
+//! the right change is for the layers to use this newtype rather than deleting it.
 
-/// TPM 报文首部的 tag 字段。
+/// Tag field in the TPM message header.
 #[derive(Clone, Copy)]
 pub enum TpmTag {
-    /// `TPM_TAG_RQU_COMMAND` = 193（TPM 1.2 命令）
+    /// `TPM_TAG_RQU_COMMAND` = 193 (TPM 1.2 command)
     RquCommand,
     /// `TPM2_ST_NO_SESSIONS` = 0x8001
     Tpm2NoSessions,
     /// `TPM2_ST_SESSIONS` = 0x8002
     Tpm2Sessions,
-    /// 0 —— `tpm_buf_reset()` 显式允许（用于尚未定型的缓冲区）
+    /// 0 — explicitly allowed by `tpm_buf_reset()` for an unfinalized buffer
     Null,
 }
 impl TpmTag {
@@ -29,7 +29,7 @@ impl TpmTag {
             TpmTag::Null => 0u16,
         }
     }
-    /// 解析线上字节。
+    /// Parse a value from the wire.
     pub fn from_code(c: u16) -> Option<TpmTag> {
         if c == 193u16 {
             Some(TpmTag::RquCommand)
@@ -44,9 +44,10 @@ impl TpmTag {
         }
     }
 }
-/// TPM 返回码（首部第 3 个字段，与 ordinal 复用同一偏移）。
-/// newtype 而非 enum：返回码空间开放（含厂商自定义），穷举不现实，
-/// 但至少不再与 ordinal 混用同一个裸 `u32`。
+/// TPM return code (the third field in the header, sharing one offset with the ordinal).
+/// A newtype rather than an enum: the return-code space is open (including vendor-defined values), so an
+/// exhaustive enum is unrealistic, but at least it no longer mixes with the ordinal in the same bare
+/// `u32`.
 #[derive(Clone, Copy)]
 pub struct TpmRc(pub u32);
 impl TpmRc {

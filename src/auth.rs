@@ -1,18 +1,19 @@
 use crate::{crypto::*, cursor::Cursor};
 
-/// 标签 2 字节 + 长度 4 字节 + 命令码或返回码 4 字节。
+/// Tag: 2 bytes + length: 4 bytes + command code or return code: 4 bytes.
 pub const HEADER_LEN: usize = 10;
-/// 带授权区的报文标签。授权区只在这个标签下存在。
+/// Tag for a packet with an authorization area. The authorization area exists only under this tag.
 pub const ST_SESSIONS: u16 = 0x8002;
-/// 会话属性位。
+/// Session attribute bits.
 pub const SA_CONTINUE_SESSION: u8 = 0x01;
 pub const SA_DECRYPT: u8 = 0x20;
 pub const SA_ENCRYPT: u8 = 0x40;
-/// 授权区里最多允许出现的会话数。
+/// Maximum number of sessions allowed in the authorization area.
 ///
-/// 规范上限是 3。本实现只追加自己那一个，但响应里可能夹带调用方另行附加
-/// 的会话，解析侧仍要能跳过它们——跳过的轮数必须有上界，否则一条精心
-/// 构造的响应就能把解析循环拖住。
+/// The spec limit is 3. This implementation appends only its own session, but the response may
+/// contain additional sessions appended by the caller; the parsing side must still skip them. The
+/// number of skipped sessions must be bounded, otherwise a carefully crafted response could stall
+/// the parsing loop indefinitely.
 pub const MAX_SESSIONS: usize = 3;
 const SESS_HANDLE_OFF: usize = 0;
 const SESS_NONCE_SIZE_OFF: usize = 4;
@@ -20,18 +21,19 @@ const SESS_NONCE_OFF: usize = 6;
 const SESS_ATTRS_OFF: usize = SESS_NONCE_OFF + NONCE_LEN;
 const SESS_HMAC_SIZE_OFF: usize = SESS_ATTRS_OFF + 1;
 const SESS_HMAC_OFF: usize = SESS_HMAC_SIZE_OFF + 2;
-/// 单个命令侧会话占用的字节数。
+/// Number of bytes consumed by a single command-side session.
 pub const CMD_SESSION_LEN: usize = SESS_HMAC_OFF + NONCE_LEN;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AuthErr {
-    /// 报文结构与其自身声明的长度对不上。
+    /// The packet structure does not match the length it declares.
     Malformed,
-    /// 授权区里定位不到本会话。
+    /// The current session cannot be located in the authorization area.
     NoSession,
-    /// nonce 或 HMAC 字段长度不是约定的摘要长度。这两个长度是对端可控的，
-    /// 放行任意值等于把后续所有偏移推理交给对端决定。
+    /// The nonce or HMAC field length is not the expected digest length. These lengths are under the
+    /// peer's control; accepting arbitrary values would effectively let the peer decide all later
+    /// offset computations.
     BadField,
-    /// 重算出的 HMAC 与收到的不符。
+    /// The recomputed HMAC does not match the received one.
     HmacMismatch,
 }
 pub(crate) fn auth_hmac<H: HmacSha256Ctx>(
@@ -58,7 +60,7 @@ pub(crate) fn rp_hash<S: Sha256Ctx>(rc: u32, ordinal: u32, params: &[u8]) -> [u8
     s.update(params);
     s.finish()
 }
-/// `names` 是各授权句柄名字的顺序拼接，由会话层准备。
+/// `names` is the concatenation of the names of all authorized handles, prepared by the session layer.
 pub(crate) fn cp_hash<S: Sha256Ctx>(ordinal: u32, names: &[u8], params: &[u8]) -> [u8; SHA256_LEN] {
     let mut s = S::new();
     let ord_b = be32_arr(ordinal);
@@ -67,11 +69,12 @@ pub(crate) fn cp_hash<S: Sha256Ctx>(ordinal: u32, names: &[u8], params: &[u8]) -
     s.update(params);
     s.finish()
 }
-/// 在 `out[off..]` 处铺开一个会话，HMAC 字段先留空。
+/// Lay out a session at `out[off..]`, leaving the HMAC field blank.
 ///
-/// 留空而不是填随机字节：占位内容参与不了任何校验，但会被写进最终报文。
-/// 万一后续的 [`patch_hmac`] 因错误路径没跑到，留下的应当是一望而知的全
-/// 零，而不是看起来像真 MAC 的东西。
+/// We leave it blank instead of filling it with random bytes: the placeholder is not part of any
+/// checksum, but it will still be written into the final packet. If a later [`patch_hmac`] call is
+/// skipped because of an error path, the leftover should be an obvious all-zero pattern rather than
+/// something that looks like a real MAC.
 pub(crate) fn write_cmd_session(
     out: &mut [u8],
     off: usize,
@@ -95,50 +98,53 @@ pub(crate) fn write_cmd_session(
     let hmac_start = off + SESS_HMAC_OFF;
     out[hmac_start..hmac_start + NONCE_LEN].fill(0);
 }
-/// 把算好的 MAC 填进占位处。
+/// Fill the reserved MAC field with the computed value.
 pub(crate) fn patch_hmac(out: &mut [u8], off: usize, mac: &[u8; SHA256_LEN]) {
     let start = off + SESS_HMAC_OFF;
     out[start..start + SHA256_LEN].copy_from_slice(mac);
 }
-/// 一条响应里与本会话有关的位置信息。
+/// Session-related position information for a single response.
 ///
-/// 只记偏移不复制内容：参数区可能有几千字节，而校验只需要能指到它。
-/// nonce 例外——它要跨轮次留存，必须复制出来。
+/// We record only the offsets and not the content: the parameter area may be thousands of bytes long,
+/// and the checksum only needs a way to point to it. The nonce is the exception—it must survive across
+/// rounds and therefore must be copied out.
 #[derive(Clone, Copy)]
 pub struct RspAuth {
-    /// 参数区起点。
+    /// Start of the parameter area.
     pub param_off: usize,
-    /// 参数区长度。
+    /// Length of the parameter area.
     pub param_len: usize,
-    /// 本会话 nonce 字段起点。
+    /// Start of this session's nonce field.
     pub nonce_off: usize,
-    /// 本会话 HMAC 字段起点。
+    /// Start of this session's HMAC field.
     pub hmac_off: usize,
-    /// 对端回报的会话属性。
+    /// Session attributes reported by the peer.
     pub attrs: u8,
-    /// 对端本轮的 nonce。
+    /// The peer's nonce for this round.
     pub tpm_nonce: [u8; NONCE_LEN],
 }
-/// 取出偏移 `off` 起的一段 nonce。
+/// Extract a nonce slice starting at `off`.
 fn read_nonce(raw: &[u8], off: usize) -> [u8; NONCE_LEN] {
     let mut out = [0u8; NONCE_LEN];
     out.copy_from_slice(&raw[off..off + NONCE_LEN]);
     out
 }
-/// 在响应里定位第 `index` 个会话（从零计数）。
+/// Locate the `index`-th session in the response (counting from zero).
 ///
-/// `rhandles` 是本条响应携带的句柄个数，取值只有零或一，来自命令属性表；
-/// 它不是从报文里读出来的，因为报文本身并不标注这一点。
+/// `rhandles` is the number of handle slots returned by the response; it is either zero or one and is
+/// derived from the command attribute table. It is not read from the packet itself because the packet
+/// does not indicate it.
 ///
-/// 三处检查值得单独说明：
+/// Three checks are worth calling out separately:
 ///
-/// - **本会话必须是最后一个。** 若它后面还有别的会话，`hmac_off + 32` 就
-///   不等于报文长度。本实现追加会话时总是追加在最后，所以这条既是格式
-///   检查，也是「拿到的确实是自己那一个」的旁证。
-/// - **nonce 与 HMAC 长度必须恰为摘要长度。** 这两个长度由对端给出，一旦
-///   放行任意值，后面所有偏移就都由对端说了算。
-/// - **长度字段必须与实到字节数相等。** 少一字节意味着解析会读到不属于本
-///   条响应的数据，多一字节意味着上层截断有误。
+/// - **This session must be the last one.** If there are any sessions after it, `hmac_off + 32` will not
+///   equal the packet length. This implementation always appends its own session last, so this check is
+///   both a format check and a side condition that proves we are looking at the correct session.
+/// - **The nonce and HMAC lengths must exactly match the digest length.** These lengths are chosen by the
+///   peer; allowing arbitrary values would hand all later offset reasoning to the peer.
+/// - **The length field must match the number of bytes actually present.** If it is one byte short, the
+///   parser will read data that belongs to the next response; if it is one byte too long, the caller will
+///   truncate the response incorrectly.
 pub(crate) fn parse_rsp_auth(
     raw: &[u8],
     rhandles: usize,
@@ -216,10 +222,11 @@ pub(crate) fn parse_rsp_auth(
         tpm_nonce,
     })
 }
-/// 逐字节比较，不提前返回。
+/// Compare byte by byte without early return.
 ///
-/// 提前返回会让比较耗时随首个不同字节的位置变化，等于把「猜对了几个字节」
-/// 告诉能计时的一方。MAC 比较必须是定时的。
+/// Early return makes the comparison time depend on the position of the first differing byte, which is
+/// equivalent to telling the timing side how many bytes were guessed correctly. MAC comparison must be
+/// constant-time.
 pub(crate) fn ct_eq32(a: &[u8; SHA256_LEN], b: &[u8]) -> bool {
     let mut acc: u8 = 0;
     for i in 0..SHA256_LEN {

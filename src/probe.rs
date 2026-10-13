@@ -1,31 +1,34 @@
 use crate::{
     cmd::{CAP_TPM_PROPERTIES, CC_GET_CAPABILITY},
     cursor::be32_bytes,
-    msg::{ST_NO_SESSIONS, TPM_HEADER_LEN, build_header},
+    msg::{build_header, ST_NO_SESSIONS, TPM_HEADER_LEN},
     phy::TisPhy,
     xfer::Xfer,
 };
 
-/// 器件家族。
+/// Device family.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Family {
-    /// 1.2:走 `tpm1` 路径。
+    /// 1.2: use the `tpm1` path.
     OneTwo,
-    /// 2.0:走根部的会话/授权路径。
+    /// 2.0: use the root session/authorization path.
     TwoZero,
 }
-/// 探测用的属性子项:器件实现的命令总数。取哪一项无所谓——探测只看响应标签,
-/// 不看载荷。
+/// Property sub-item for probing: the total number of commands implemented by the device. Any such item
+/// works — the probe only looks at the response tag, not the payload.
 const PT_TOTAL_COMMANDS: u32 = 0x0000_0129;
-/// 探测命令总长:头 10 + 三个 u32 载荷。
+/// Total length of the probe command: 10-byte header + three u32 payload words.
 const PROBE_LEN: usize = TPM_HEADER_LEN + 12;
-/// 探测响应暂存区。只读它的前两个字节(标签),给足头部余量即可。
+/// Scratch buffer for the probe response. It only reads the first two bytes (tag), so a header-sized
+/// margin is enough.
 const PROBE_RSP: usize = 64;
-/// 判定器件家族。
+/// Determine the device family.
 ///
-/// 借用链路发一条命令即返回,链路仍归调用方所有,供随后的引导序列接管。链路
-/// 若不处于可发命令的状态,保守判为 1.2——即不启用 2.0 专属路径,宁可少认能力
-/// 也不误把一个没准备好的器件当成 2.0 去跑授权握手。
+/// This borrows the link to send a single command and returns immediately; the link remains owned by the
+/// caller for the subsequent boot sequence to take over. If the link is not in a send-ready state, it is
+/// conservatively classified as 1.2 — do not enable the 2.0-specific path, even if it means admitting
+/// less capability rather than misclassifying an unready device as 2.0 and running the authorization
+/// handshake against it.
 pub fn probe_family<P: TisPhy>(x: &mut Xfer<P>) -> Family {
     if !x.ready() {
         return Family::OneTwo;

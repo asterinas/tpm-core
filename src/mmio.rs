@@ -8,7 +8,8 @@ pub trait TisMmioBackend {
 }
 pub struct TisMmio<B: TisMmioBackend> {
     backend: B,
-    /// 每次 [`TisPhy::delay`] 空转的圈数。不是时长，真实间隔取决于目标 CPU 主频。
+    /// Number of idle spin-loop iterations per [`TisPhy::delay`] call. This is not a duration; the
+    /// actual interval depends on the host CPU frequency.
     spin: u32,
 }
 impl<B: TisMmioBackend> TisMmio<B> {
@@ -42,7 +43,7 @@ impl<B: TisMmioBackend> TisPhy for TisMmio<B> {
         }
         Ok(())
     }
-    /// 写入 `TPM_STS_COMMAND_READY`（0x40）。
+    /// Write `TPM_STS_COMMAND_READY` (0x40).
     fn reset_fifo(&mut self, addr: u32) {
         let _ = self.backend.write8(addr, 0x40u8);
     }

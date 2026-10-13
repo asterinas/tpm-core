@@ -1,12 +1,12 @@
 [package]
 name = "tpm-core"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.75"
 license = "MPL-2.0"
 description = "TPM 2.0 core transport/session library with verification-oriented design."
 repository = "https://github.com/asterinas/tpm-core"
-homepage = "https://github.com/CaiYufan-NUS/asterinas-tpm-verus"
+homepage = "https://github.com/asterinas/tpm-core"
 documentation = "https://docs.rs/tpm-core"
 readme = "README.md"
 keywords = ["tpm", "tpm2", "security", "kernel", "no-std"]

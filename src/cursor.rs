@@ -1,13 +1,13 @@
-/// 整数 → 大端字节。与 `spec_be16_at` 互为逆运算。
+/// Integer to big-endian bytes. This is the inverse of `spec_be16_at`.
 pub(crate) fn be16_bytes(v: u16) -> [u8; 2] {
     v.to_be_bytes()
 }
-/// 整数 → 大端字节。与 `spec_be32_at` 互为逆运算。
+/// Integer to big-endian bytes. This is the inverse of `spec_be32_at`.
 pub(crate) fn be32_bytes(v: u32) -> [u8; 4] {
     v.to_be_bytes()
 }
-/// 只读解析游标。`pos` 私有，推进只能经由 `read_*`/`skip`，外部若需当前
-/// 位置通过 [`Cursor::pos`] 读取。
+/// Read-only parsing cursor. `pos` is private; progress can only happen through `read_*`/`skip`, and
+/// external code can read the current position via [`Cursor::pos`].
 pub struct Cursor {
     pos: usize,
 }
@@ -15,7 +15,8 @@ impl Cursor {
     pub fn new() -> Cursor {
         Cursor { pos: 0 }
     }
-    /// 当前解析位置。解析侧据此记录字段起点（如参数区、nonce 偏移）。
+    /// Current parsing position. The parser uses this to record the start of each field (for example,
+    /// parameter area offsets or nonce offsets).
     pub fn pos(&self) -> usize {
         self.pos
     }
@@ -28,14 +29,16 @@ impl Default for Cursor {
 }
 
 impl Cursor {
-    /// 从指定偏移开始解析（用于跳过已由上层校验过的固定前缀）。
+    /// Parse starting at a specified offset (for skipping fixed prefixes that were already validated by a
+    /// higher layer).
     pub fn at(pos: usize) -> Cursor {
         Cursor { pos }
     }
     pub fn remaining(&self, data: &[u8]) -> usize {
         data.len() - self.pos
     }
-    /// 剩余字节是否恰好读完。用于"响应尾部不得有多余数据"这类检查。
+    /// Whether the remaining bytes are exactly exhausted. Used for checks such as “the response tail must
+    /// contain no extra data.”
     pub fn is_exhausted(&self, data: &[u8]) -> bool {
         self.pos == data.len()
     }
@@ -73,8 +76,9 @@ impl Cursor {
             None
         }
     }
-    /// 借出接下来的 `n` 字节。这是变长字段（`TPM2B`、PCR 选择位图）
-    /// 唯一的取用方式——长度来自报文本身，因此边界检查必须在这里发生。
+    /// Borrow the next `n` bytes. This is the only way to consume variable-length fields such as `TPM2B`
+    /// and PCR selection bitmaps; the length comes from the packet itself, so boundary checks must happen
+    /// here.
     pub fn read_bytes<'a>(&mut self, data: &'a [u8], n: usize) -> Option<&'a [u8]> {
         let len = data.len();
         if n <= len && self.pos <= len - n {
@@ -87,7 +91,8 @@ impl Cursor {
             None
         }
     }
-    /// 跳过 `n` 字节。用于忽略当前阶段不关心但格式已知的字段。
+    /// Skip `n` bytes. This is used to ignore fields that are uninteresting in the current phase but whose
+    /// layout is known.
     pub fn skip(&mut self, data: &[u8], n: usize) -> bool {
         let len = data.len();
         if n <= len && self.pos <= len - n {
@@ -98,9 +103,10 @@ impl Cursor {
         }
     }
 }
-/// 切片中是否存在非零字节。
+/// Whether a slice contains any non-zero bytes.
 ///
-/// PCR 分配解析要靠它判断某个 bank 是否真的被分配（选择位图全零即未分配）。
+/// PCR allocation parsing uses this to determine whether a bank is actually allocated; a zero selection
+/// bitmap means the algorithm is supported but not active.
 pub(crate) fn any_nonzero(s: &[u8]) -> bool {
     s.iter().any(|&b| b != 0)
 }

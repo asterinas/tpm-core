@@ -4,13 +4,14 @@ use crate::{
     module::IoErr,
     phy::TisPhy,
     rewrite::HEADER_SIZE,
-    xfer::{Xfer, XferErr, peek_be32},
+    xfer::{peek_be32, Xfer, XferErr},
 };
 
-/// 芯片当前持有的句柄集合。
+/// The set of handles currently held by the chip.
 ///
-/// 只有幽灵字段，运行时是零大小类型。所有修改它的方法都不含可执行代码——
-/// 它们不是在「记录」什么，而是在**声明本端对芯片行为的假设**。
+/// This is a phantom field-only type at runtime and is zero-sized. All its mutating methods have no
+/// executable code; they are not “recording” anything, but rather stating the local side’s assumptions
+/// about chip behavior.
 pub struct LiveSet;
 impl LiveSet {
     pub fn new() -> Self {
@@ -72,10 +73,11 @@ impl<P: TisPhy> ChipTransport for ChipLink<P> {
         Ok(n)
     }
 }
-/// 链路错误 → 编排层错误。
+/// Link error → orchestration-layer error.
 ///
-/// 链路层失败没有返回码可读，因此这里只做「传输语义」上的分类：
-/// 超时可重试，物理故障不可重试，协议帧不可信，命令自描述不自洽。
+/// The link layer has no readable return code on failure, so this only classifies the “transport
+/// semantics”: timeouts are retryable, physical faults are not, protocol frames are untrusted, and the
+/// command’s self-description is inconsistent.
 pub fn map_err(e: XferErr) -> IoErr {
     match e {
         XferErr::Bus(crate::tis::TisErr::Phy) => IoErr::Bus,

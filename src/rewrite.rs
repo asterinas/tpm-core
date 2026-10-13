@@ -1,13 +1,13 @@
 use super::{handle::*, table::SpaceTable};
 
-/// 报文头长度：标签 2 字节 + 长度 4 字节 + 命令码或返回码 4 字节。
+/// Message header length: tag (2 bytes) + length (4 bytes) + command or return code (4 bytes).
 pub const HEADER_SIZE: usize = 10;
-/// 命令句柄数由 3 位字段给出，上限为 7。
+/// The number of handles in a command is given by a 3-bit field, with an upper bound of 7.
 pub const MAX_CHANDLES: usize = 7;
 pub const RC_SUCCESS: u32 = 0;
-/// 能力查询里「句柄列表」这一类目。
+/// The “handle list” category in capability queries.
 pub const CAP_HANDLES: u32 = 0x0000_0001;
-/// 能力响应体布局：更多数据标志 1 字节，类目 4 字节，数量 4 字节。
+/// Capability response body layout: more-data flag (1 byte), category (4 bytes), count (4 bytes).
 pub const CAP_MORE_OFF: usize = HEADER_SIZE;
 const CAP_CAPABILITY_OFF: usize = HEADER_SIZE + 1;
 const CAP_COUNT_OFF: usize = HEADER_SIZE + 5;
@@ -15,9 +15,9 @@ const CAP_HANDLES_OFF: usize = HEADER_SIZE + 9;
 const RSP_LENGTH_OFF: usize = 2;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SpaceErr {
-    /// 报文长度与其自身声明的结构不符。
+    /// The packet length does not match the structure it declares.
     Malformed,
-    /// 命令引用了一个解析不出来的虚拟句柄。
+    /// The command references a virtual handle that cannot be resolved.
     BadHandle,
 }
 pub fn read_be32(b: &[u8], off: usize) -> u32 {
@@ -26,10 +26,10 @@ pub fn read_be32(b: &[u8], off: usize) -> u32 {
 fn write_be32(b: &mut [u8], off: usize, v: u32) {
     b[off..off + 4].copy_from_slice(&v.to_be_bytes());
 }
-/// 把命令句柄区里的虚拟句柄换成物理句柄。
+/// Replace the virtual handles in the command handle area with physical handles.
 ///
-/// `nr_handles` 由命令码的属性表给出，属于阶段 2 的编解码产物；这里只
-/// 把它当成一个已经过校验的参数。
+/// `nr_handles` is provided by the command-property table and is therefore a stage-2 encoding artifact;
+/// here it is treated as an already-validated parameter.
 pub fn map_command_handles(
     tbl: &SpaceTable,
     nr_handles: usize,
@@ -50,24 +50,25 @@ pub fn map_command_handles(
     }
     Ok(())
 }
-/// 响应头句柄的处理结果。
+/// Result of processing a handle returned in the response header.
 ///
-/// `OutOfSlots` 把「必须释放这个物理句柄」这条义务写进了返回值类型，
-/// 而不是留给调用方凭约定记住。编排层不处理它就编译不过。
+/// `OutOfSlots` places the obligation to release this physical handle into the return type instead of
+/// leaving it as an unstated convention. The orchestrator does not compile if it does not handle it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum HeaderOutcome {
-    /// 响应里没有句柄，或命令本身失败，报文未改动。
+    /// There is no handle in the response, or the command itself failed; the packet is left untouched.
     NoHandle,
-    /// 瞬态句柄已替换为虚拟句柄。
+    /// A transient handle has been replaced by a virtual handle.
     Virtualized { vhandle: u32 },
-    /// 会话句柄已登记，报文未改动（会话句柄不虚拟化）。
+    /// A session handle has been registered; the packet is left untouched (session handles are not
+    /// virtualized).
     SessionTracked { phandle: u32 },
-    /// 句柄类型不认识，报文未改动。
+    /// The handle type is unknown; the packet is left untouched.
     Unknown { phandle: u32 },
-    /// 表已满，必须释放 `flush`。
+    /// The table is full; `flush` must be released.
     OutOfSlots { flush: u32 },
 }
-/// 处理响应头部返回的句柄。
+/// Process the handle returned in the response header.
 pub fn map_response_handle(
     tbl: &mut SpaceTable,
     has_rhandle: bool,
@@ -105,13 +106,14 @@ pub fn map_response_handle(
         HeaderOutcome::Unknown { phandle }
     }
 }
-/// 改写能力查询响应里的句柄列表：瞬态句柄换成虚拟句柄，本 space 不认识的
-/// 瞬态句柄**从列表中剔除**，其余原样保留。列表就地压紧，长度字段与
-/// 数量字段一并更新。
+/// Rewrite the handle list in a capability response: transient handles are replaced by virtual handles,
+/// transient handles unknown to this space are removed from the list, and the rest are kept as-is. The
+/// list is compacted in place and the length and count fields are updated together.
 ///
-/// 剔除是隔离性的直接体现：一个 space 枚举瞬态对象时，只应看见自己的。
+/// Removal is a direct expression of isolation: when a space enumerates transient objects, it should only
+/// see its own.
 ///
-/// 返回改写后的报文总长度。
+/// Returns the rewritten total packet length.
 pub fn map_capability_handles(
     tbl: &SpaceTable,
     is_cap_query: bool,

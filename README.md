@@ -2,8 +2,8 @@
 
 `tpm-core` is the runtime-focused TPM 2.0 core crate extracted from the Asterinas TPM stack.
 
-This crate is the runtime-oriented extraction of the Verus verified version in
-https://github.com/CaiYufan-NUS/asterinas-tpm-verus.
+This crate is the runtime-oriented extraction of the Verus verified version in the branch tpm-core-verus of
+https://github.com/asterinas/tpm-core.
 
 This package is designed for normal Rust users who need TPM transport/session primitives without
 requiring a Verus toolchain.

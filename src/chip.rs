@@ -1,19 +1,20 @@
 use crate::{
     cmd::{CC_CONTEXT_LOAD, CC_CONTEXT_SAVE, CC_FLUSH_CONTEXT},
     module::{ContextIo, IoErr},
-    msg::{ST_NO_SESSIONS, build_header},
-    rewrite::{HEADER_SIZE, read_be32},
+    msg::{build_header, ST_NO_SESSIONS},
+    rewrite::{read_be32, HEADER_SIZE},
 };
 
 pub const RC_SUCCESS: u32 = 0x0000_0000;
-/// 位 7 置位表示「格式一」返回码：低 6 位是错误号，位 8..11 是出错的
-/// 句柄 / 参数 / 会话序号。分类时必须先把序号位抹掉。
+/// Bit 7 is set for a “Format-1” return code: the low 6 bits are the error number, and bits 8..11 are
+/// the offending handle / parameter / session index. When classifying, the index bits must be cleared
+/// first.
 const RC_FMT1_BIT: u32 = 0x0000_0080;
-/// TPM Format-1 返回码中的 selector bits：
-/// - bit 6 (`TPM_RC_P`) 表示参数选择器；
-/// - bits 8..11 (`TPM_RC_N`) 表示对象 / 会话编号；
-///   这两部分必须在分类前清掉，否则 `TPM_RC_HANDLE | P | N` 会被误判成
-///   另一个错误码。
+/// Selector bits in a TPM Format-1 return code:
+/// - bit 6 (`TPM_RC_P`) indicates the parameter selector;
+/// - bits 8..11 (`TPM_RC_N`) indicate the object/session index;
+///   these must be cleared before classification, or `TPM_RC_HANDLE | P | N` will be misclassified as a
+///   different error code.
 const RC_FMT1_MASK: u32 = 0x0000_00BF;
 const RC_HANDLE: u32 = 0x0000_008B;
 const RC_INTEGRITY: u32 = 0x0000_009F;
@@ -32,12 +33,12 @@ fn rc_value(rc: u32) -> u32 {
         rc
     }
 }
-/// 返回码 → 编排层错误。
+/// Return code -> orchestration-layer error.
 ///
-/// 分类的语义边界只有一条要紧：什么算 [`IoErr::NotFound`]。它表示「目标
-/// 已不存在」，编排层据此把对应槽位直接遗忘而不是让整条路径失败——所以
-/// 这里只能放真正表示「引用了不存在的对象」的两个返回码，放宽会让状态
-/// 不一致被静默吞掉。
+/// There is only one semantic boundary that matters here: what counts as [`IoErr::NotFound`]. It means
+/// “the target no longer exists,” and the orchestration layer uses it to forget the corresponding slot
+/// instead of failing the whole path. Therefore, only the two return codes that truly mean “a non-existent
+/// object was referenced” belong here; relaxing this would silently swallow state inconsistencies.
 fn classify_rc(rc: u32) -> IoErr {
     let v = rc_value(rc);
     if v == RC_HANDLE || v == RC_REFERENCE_H0 {
@@ -56,48 +57,52 @@ fn classify_rc(rc: u32) -> IoErr {
         IoErr::Fatal
     }
 }
-/// 备份块的定长前缀：序号 8 字节、句柄 4 字节、层级 4 字节、数据长度 2 字节。
+/// Fixed-length prefix of a backup block: sequence number (8 bytes), handle (4 bytes), level (4 bytes),
+/// data length (2 bytes).
 const CTX_FIXED: usize = 18;
-/// 数据长度字段在备份块内的偏移。
+/// Offset of the data-length field within the backup block.
 const CTX_SIZE_OFF: usize = 16;
-/// 一次完整的命令 / 响应往返。
+/// One full command / response round trip.
 ///
-/// 这是本层与芯片之间唯一的接触点。实现方要么把假设直接摆在自己的
-/// `external_body` 里，要么像链路层那样把假设收进一个零大小的幽灵账本；
-/// 无论哪种，下面写下的后置条件都是本模块**据以推理的全部依据**。它们按命令
-/// 码分情况给出，而不是笼统地断言「句柄是新的」——这样每条假设都能指到具体
-/// 的规范条款上。
+/// This is the only boundary between this layer and the chip. The implementation must either place its
+/// assumptions directly in its own `external_body`, or, like the link layer, bundle the assumptions into
+/// a zero-sized ghost ledger. In either case, the postconditions written below are the entire basis on
+/// which this module reasons. They are specified by command code rather than by a blanket claim that
+/// “the handle is new,” so that each assumption can be traced to a precise specification clause.
 ///
-/// TRUST 1：响应写入不越过 `rsp` 容量，且至少包含一个完整报文头。
-/// 依据：传输层按声明长度收字节，不足即报错。
+/// TRUST 1: response writes do not exceed the `rsp` capacity and include at least one complete packet
+/// header. Basis: the transport layer reads the declared length and reports an error if it is not enough.
 ///
-/// TRUST 2：ContextLoad 成功时返回的句柄不在 `live()` 中。
-/// 依据：句柄在被显式释放或换出之前唯一标识一个已装载对象，芯片不会把
-/// 一个仍然有效的句柄再次分配出去。**这是本模块单射性的最终来源**，
-/// 也是整个 TCB 里最实质的一条。
+/// TRUST 2: when `ContextLoad` succeeds, the returned handle is not already in `live()`.
+/// Basis: before it is explicitly freed or swapped out, a handle uniquely identifies one loaded object, and
+/// the chip will not reassign a handle that is still valid. **This is the ultimate source of the
+/// injectivity property in this module**, and one of the most substantial facts in the whole TCB.
 ///
-/// TRUST 3：`live()` 只随 ContextLoad 成功而增长、随 FlushContext 而收缩，
-/// 其余命令不改变它。
+/// TRUST 3: `live()` grows only on successful `ContextLoad` and shrinks only on `FlushContext`; other
+/// commands do not change it.
 ///
-/// 关于释放命令的那条例外：它**不以传输成功为条件**。传输失败时本端无从得知
-/// 芯片是否已经释放，与其两边都不确定，不如统一按「本端不再追踪」处理——芯片
-/// 若确实没释放，那份资源会占到复位为止，这是已知且无从补救的泄漏。因此
-/// 「失败即无副作用」那条必须把释放命令排除在外，否则两条同时要求
-/// `live == old` 与 `live == old.remove(h)`，只有 `h` 本就不在集合里时才能
-/// 同时满足，实现方一个也做不出来。
+/// The exception for the flush command is important: it is **not conditioned on successful transport**.
+/// If transport fails, the host cannot know whether the chip already freed the object. It is better to
+/// treat the host as no longer tracking it on both sides, because the chip may still hold the resource
+/// until reset and that is a known, irreparable leak. Therefore, the rule “a failed action has no side
+/// effects” must exclude the flush command; otherwise, both require `live == old` and
+/// `live == old.remove(h)` simultaneously, which can only be satisfied when `h` was not in the set in the
+/// first place.
 pub trait ChipTransport {
     fn exec(&mut self, cmd: &[u8], rsp: &mut [u8]) -> Result<usize, IoErr>;
 }
-/// 命令与响应暂存区的容量。上下文数据块可以接近一页，两个缓冲区
-/// 内联在结构体里共 8 KiB；若目标平台栈紧张，把它们换成调用方提供的
-/// 切片即可，本模块的证明不依赖它们的存储方式。
+/// Capacity of the command and response temporary buffers. Context data blocks may be close to a page,
+/// and the two buffers are inlined together in the struct for a total of 8 KiB. If the target platform
+/// stack is tight, they can be replaced with caller-provided slices; the proof for this module does not
+/// depend on their storage form.
 pub(crate) const MSG_MAX: usize = 4096;
-/// 把 [`ChipTransport`] 抬成编排层要的 [`ContextIo`]。
+/// Lift [`ChipTransport`] into the orchestration-layer version required by [`ContextIo`].
 ///
-/// 这一层是完全验证的：它做的全部事情是长度校验、报文组装、返回码分类。
-/// 幽灵集合直接透传给传输层，本层不引入任何新的假设——这一点要靠三个方法
-/// 都没有 `external_body` 来保证，一旦有一个被标上，上面那句话就不再成立，
-/// 而编排层的单射性正是建立在这句话之上。
+/// This layer is fully verified: it does only length checks, packet assembly, and return-code
+/// classification. The ghost set is passed straight through to the transport layer; this layer introduces
+/// no new assumptions. This is enforced by the fact that all three methods lack `external_body`; if any
+/// one were marked, the statement above would no longer hold, and the injectivity of the orchestration
+/// layer would rest on a false premise.
 pub struct CtxIo<T: ChipTransport> {
     tx: T,
     cbuf: [u8; MSG_MAX],
@@ -111,27 +116,28 @@ impl<T: ChipTransport> CtxIo<T> {
             rbuf: [0u8; MSG_MAX],
         }
     }
-    /// 把 10 字节报文头落到命令缓冲区开头。
+    /// Place the 10-byte packet header at the beginning of the command buffer.
     ///
-    /// 后置条件里那句「幽灵集合不变」不是形式主义：组装报文与芯片状态无关，
-    /// 把这一点写下来，后面每个方法才能把「进入函数时的集合」一路带到发送
-    /// 那一刻，而不必在中途重新为它找依据。
+    /// The postcondition “the ghost set is unchanged” is not mere formalism: assembling the packet is
+    /// independent of the chip state, and if we write this down, each subsequent method can carry the
+    /// “collection at function entry” all the way to the send point without having to rediscover the basis
+    /// in the middle.
     fn put_header(&mut self, code: u32, total: usize) {
         let hdr = build_header(ST_NO_SESSIONS, code, total as u32);
         self.cbuf[..HEADER_SIZE].copy_from_slice(&hdr);
     }
-    /// 把整条命令原样交给底层传输，不做报文组装。
+    /// Hand the entire command to the lower transport without reassembling the packet.
     ///
-    /// 与 `ContextIo` 的三个方法共享同一个传输层账本，因此在 `exec_raw`
-    /// 与 `load`/`save`/`flush` 之间交替调用时，句柄记账是连续的。
+    /// It shares the same transport-layer ledger as the three methods of `ContextIo`, so the handle count
+    /// remains continuous across calls to `exec_raw` and `load`/`save`/`flush`.
     pub fn exec_raw(&mut self, cmd: &[u8], rsp: &mut [u8]) -> Result<usize, IoErr> {
         self.tx.exec(cmd, rsp)
     }
-    /// 交回底层传输，结束上下文往返阶段。
+    /// Return the lower transport and end the context round trip.
     ///
-    /// 取走 `self`，两块暂存区随之释放，幽灵集合原样落到返回值上。后置条件
-    /// 里那句相等是阶段移交的依据：适配器代管期间对芯片做过什么，交回去的
-    /// 传输层照单全收，不重算也不清零。
+    /// Taking `self` frees the two temporary buffers and leaves the ghost set unchanged in the returned
+    /// value. The equality in the postcondition is the basis for the phase handoff: whatever changed on the
+    /// chip while the adapter owned it is carried back unchanged in the returned transport layer.
     pub fn release(self) -> T {
         self.tx
     }
@@ -193,8 +199,9 @@ impl<T: ChipTransport> ContextIo for CtxIo<T> {
         let _ = self.tx.exec(&self.cbuf, &mut self.rbuf);
     }
 }
-/// [`write_be32`] 的定长数组版本。切片版要求 `&mut [u8]`，而这里操作的是
-/// 结构体里的数组字段，重借用会让 Verus 多出一层义务，直接写更省事。
+/// Fixed-array version of [`write_be32`]. The slice version requires `&mut [u8]`, but this operates on
+/// array fields inside a struct; reusing the slice version would make Verus carry an extra obligation, so
+/// writing directly is simpler.
 fn write_be32_arr(b: &mut [u8; MSG_MAX], off: usize, v: u32) {
     b[off..off + 4].copy_from_slice(&v.to_be_bytes());
 }

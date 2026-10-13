@@ -2,12 +2,13 @@ use crate::{cursor::Cursor, msg::TPM_HEADER_LEN, phy::TisPhy, tis::*};
 
 pub struct Tis<P: TisPhy> {
     pub phy: P,
-    /// 本驱动使用的 locality 号。
+    /// Locality number used by this driver.
     pub locality: u8,
-    /// 是否已申请到 locality 且尚未归还。
+    /// Whether locality has been acquired and not yet returned.
     ///
-    /// 这是本层唯一的持久状态。把它单列出来而不是每次去读器件，是因为要证的
-    /// 性质是「驱动自己有没有落下归还动作」，那属于本端的账，读器件读不出来。
+    /// This is the only persistent state in this layer. Keeping it separate rather than reading the device
+    /// every time is because the property we need to prove is “did the driver forget to return locality?”,
+    /// which belongs to the local side and cannot be inferred from the device.
     pub held: bool,
 }
 impl<P: TisPhy> Tis<P> {
@@ -15,10 +16,11 @@ impl<P: TisPhy> Tis<P> {
         let addr = reg_sts(self.locality);
         self.phy.read8(addr)
     }
-    /// 轮询状态寄存器，直到 `mask` 里的位全部置起。
+    /// Poll the status register until all bits in `mask` are set.
     ///
-    /// 预算是轮询次数，`decreases` 直接用它——这就是把超时从时间域搬到次数域的
-    /// 全部收益：终止性不需要任何关于时钟的假设。
+    /// The budget is the polling count, and `decreases` uses it directly — this is the entire benefit of
+    /// moving the timeout from the time domain to the count domain: termination does not require any
+    /// assumptions about clocks.
     fn wait_status(&mut self, mask: u8, budget: u32) -> Result<u8, TisErr> {
         let mut left = budget;
         while left > 0 {
@@ -31,11 +33,11 @@ impl<P: TisPhy> Tis<P> {
         }
         Err(TisErr::Timeout)
     }
-    /// 读取本轮可以连续搬运的字节数。
+    /// Read how many bytes can be moved continuously in this round.
     ///
-    /// 返回值保证非零。零意味着器件还没准备好，那种情况在这里表现为继续轮询
-    /// 或超时，而不是返回一个「搬零个字节」的成功——后者会让上层的搬运循环原
-    /// 地打转，且这个空转不会被任何超时预算兜住。
+    /// The return value is guaranteed to be non-zero. A zero value means the device is not ready yet; in
+    /// that case it keeps polling or times out here instead of returning a “transferred zero bytes” success —
+    /// that would cause the upper transfer loop to spin forever, and no timeout budget would catch it.
     fn burstcount(&mut self, budget: u32) -> Result<u16, TisErr> {
         let mut left = budget;
         while left > 0 {
@@ -50,11 +52,12 @@ impl<P: TisPhy> Tis<P> {
         }
         Err(TisErr::Timeout)
     }
-    /// 器件是否已经把 locality 判给本端。
+    /// Whether the device has already granted locality to this side.
     ///
-    /// 三位一起看：仅 `ACTIVE` 置起不够，还要 `VALID` 置起表示寄存器内容有效，
-    /// 且 `REQUEST_USE` 已落下表示申请动作已经处理完。少看任何一位都会在竞争
-    /// 场景下把「申请正在处理中」误判成「已经拿到」。
+    /// All three bits matter: `ACTIVE` alone is not enough; `VALID` must also be set to indicate the
+    /// register contents are valid, and `REQUEST_USE` must already be cleared to show the request has been
+    /// processed. Missing any bit in a race scenario would misclassify “request is still being processed” as
+    /// “already granted”.
     fn check_locality(&mut self) -> Result<bool, TisErr> {
         let addr = reg_access(self.locality);
         let a = self.phy.read8(addr)?;
@@ -62,10 +65,10 @@ impl<P: TisPhy> Tis<P> {
         let mask = want | ACCESS_REQUEST_USE;
         Ok((a & mask) == want)
     }
-    /// 申请 locality。
+    /// Request locality.
     ///
-    /// 失败时保证不持有——申请一半失败却把标志留成「持有」，会让后续的归还去
-    /// 释放一个从未拿到的资源。
+    /// On failure it guarantees no ownership is held — if a partially failed request leaves the flag as
+    /// “held,” the subsequent release would free a resource that was never acquired.
     pub fn request_locality(&mut self, budget: u32) -> Result<(), TisErr> {
         if self.check_locality()? {
             self.held = true;
@@ -84,21 +87,22 @@ impl<P: TisPhy> Tis<P> {
         }
         Err(TisErr::Timeout)
     }
-    /// 归还 locality。
+    /// Return locality.
     ///
-    /// 无论寄存器写入成功与否，本端的持有标志都要清掉。写失败说明总线已经出了
-    /// 问题，此时把标志留成「持有」只会让驱动认定自己永远握着资源，再也不肯发
-    /// 起下一条命令——一个可恢复的总线故障因此变成永久性的功能丧失。
+    /// Regardless of whether the register write succeeds, the local held flag must be cleared. If the write
+    /// fails, the bus is already broken; leaving the flag as “held” would make the driver think it owns the
+    /// resource forever and prevent it from issuing the next command — a recoverable bus fault would become
+    /// a permanent functional loss.
     pub fn relinquish_locality(&mut self) {
         let addr = reg_access(self.locality);
         let _ = self.phy.write8(addr, ACCESS_ACTIVE_LOCALITY);
         self.held = false;
     }
-    /// 把命令送进数据口。
+    /// Feed a command into the data FIFO.
     ///
-    /// 成功时数据口收到的字节**恰好是命令本身**——不多不少，顺序一致。失败时
-    /// 数据口一定被清空，绝不会留下半条命令：器件那边若残留半条命令，下一次
-    /// 发送就会拼出一条谁也没写过的报文。
+    /// On success, the FIFO receives exactly the command itself — no more, no less, in the same order. On
+    /// failure, the FIFO is definitely cleared and no half-command is left behind: if a half-command remains
+    /// in the device, the next send would assemble a packet that nobody ever wrote.
     pub fn send_data(&mut self, cmd: &[u8], len: usize) -> Result<(), TisErr> {
         self.send_data_inner(cmd, len).inspect_err(|_| {
             let sts_addr = reg_sts(self.locality);
@@ -138,7 +142,7 @@ impl<P: TisPhy> Tis<P> {
         }
         Ok(())
     }
-    /// 从数据口取 `count` 字节到 `out[off..]`。
+    /// Read `count` bytes from the FIFO into `out[off..]`.
     fn recv_data(&mut self, out: &mut [u8], off: usize, count: usize) -> Result<(), TisErr> {
         let fifo_addr = reg_data_fifo(self.locality);
         let mut got: usize = 0;
@@ -154,11 +158,12 @@ impl<P: TisPhy> Tis<P> {
         }
         Ok(())
     }
-    /// 收取一条完整响应，返回其字节数。
+    /// Receive a full response and return its length.
     ///
-    /// 返回值同时是**下一层解码的入口条件**：成功时 `out[0..n]` 的长度字段与
-    /// `n` 相等，也就是满足报文层的格式良好性。解码层因此不必再校验一遍长度，
-    /// 两层对「一条响应有多长」的理解由这条后置条件焊死。
+    /// The return value is also the **entry condition for the next layer’s decoder**: on success, the
+    /// `out[0..n]` length field matches `n`, which means the packet-layer format is valid. The decoding
+    /// layer therefore does not need to re-check its length, and the two layers are welded together on the
+    /// understanding of “how long a response is” by this postcondition.
     pub fn recv(&mut self, out: &mut [u8]) -> Result<usize, TisErr> {
         self.recv_data(out, 0, TPM_HEADER_LEN)?;
         let mut c = Cursor::at(2);
@@ -178,17 +183,18 @@ impl<P: TisPhy> Tis<P> {
         }
         Ok(n)
     }
-    /// 发一条命令，收一条响应。
+    /// Send a command and receive a response.
     ///
-    /// **locality 的归还只有一处，而且不在任何条件分支里。** 申请之后立刻把全
-    /// 部可能失败的动作收进一个内部函数，让归还成为无条件的收尾语句——于是
-    /// 「任何路径退出时 locality 均被释放」不需要逐条路径去查，它是控制流的形
-    /// 状直接给出的。这也是本层唯一一处刻意为了可证性而调整的结构。
+    /// **There is only one return site for locality, and it is not inside any conditional branch.** After the
+    /// request is made, all potentially failing actions are moved into an internal function, making the
+    /// release of locality an unconditional cleanup statement — as a result, “every path exits with locality
+    /// released” does not need to be checked path by path; it is directly encoded in the control flow. This is
+    /// the one place where the layer is intentionally restructured for verifiability.
     ///
-    /// `exec_budget` 是等待 `STS_DATA_AVAIL` 的轮询次数上界，由调用方按命令码
-    /// 计算后传入（见 [`crate::xfer::poll_budget`]）。不同命令的执行时长差异
-    /// 可达两个数量级，只有在这里用按命令定制的预算才能同时满足「快命令快超时」
-    /// 和「慢命令不误报超时」两条要求。
+    /// `exec_budget` is the upper bound on the polling count used to wait for `STS_DATA_AVAIL`, supplied by
+    /// the caller according to the command code (see [`crate::xfer::poll_budget`]). Different commands can
+    /// differ by two orders of magnitude in execution time; only a command-specific budget lets us satisfy
+    /// both “fast commands time out quickly” and “slow commands are not falsely reported as timed out.”
     pub fn transmit(
         &mut self,
         cmd: &[u8],
