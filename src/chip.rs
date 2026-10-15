@@ -214,9 +214,7 @@ mod tests {
     impl ChipTransport for FakeChip {
         fn exec(&mut self, _cmd: &[u8], rsp: &mut [u8]) -> Result<usize, IoErr> {
             let n = self.rsp.len().min(rsp.len());
-            for i in 0..n {
-                rsp[i] = self.rsp[i];
-            }
+            rsp[..n].copy_from_slice(&self.rsp[..n]);
             Ok(n)
         }
     }
