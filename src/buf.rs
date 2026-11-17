@@ -62,7 +62,24 @@ impl<const N: usize> TpmBuf<N> {
         }
     }
     /// Corresponds to `tpm_buf_reset()`: initialize an existing storage area in place as a command.
+    ///
+    /// This method only compiles when `N` is at least [`TPM_HEADER_SIZE`].
+    ///
+    /// ```compile_fail
+    /// use tpm_core::{BufKind, types::TpmTag, TpmBuf};
+    /// let mut buf = TpmBuf::<9> {
+    ///     data: [0; 9], length: 0, kind: BufKind::Command,
+    ///     overflow: false, boundary_error: false, handles: 0,
+    /// };
+    /// buf.reset_command(TpmTag::Null, 0);
+    /// ```
     pub fn reset_command(&mut self, tag: TpmTag, ordinal: u32) {
+        const {
+            assert!(
+                N >= TPM_HEADER_SIZE,
+                "TpmBuf command capacity is smaller than TPM_HEADER_SIZE"
+            );
+        }
         self.kind = BufKind::Command;
         self.overflow = false;
         self.boundary_error = false;
@@ -74,7 +91,24 @@ impl<const N: usize> TpmBuf<N> {
         self.put_be32(6, ordinal);
     }
     /// Corresponds to `tpm_buf_reset_sized()`.
+    ///
+    /// This method only compiles when `N` is at least [`TPM2B_HEADER_SIZE`].
+    ///
+    /// ```compile_fail
+    /// use tpm_core::{BufKind, TpmBuf};
+    /// let mut buf = TpmBuf::<1> {
+    ///     data: [0; 1], length: 0, kind: BufKind::Tpm2b,
+    ///     overflow: false, boundary_error: false, handles: 0,
+    /// };
+    /// buf.reset_sized();
+    /// ```
     pub fn reset_sized(&mut self) {
+        const {
+            assert!(
+                N >= TPM2B_HEADER_SIZE,
+                "TpmBuf sized capacity is smaller than TPM2B_HEADER_SIZE"
+            );
+        }
         self.kind = BufKind::Tpm2b;
         self.overflow = false;
         self.boundary_error = false;
@@ -83,6 +117,13 @@ impl<const N: usize> TpmBuf<N> {
         self.put_be16(0, 0u16);
     }
     /// Corresponds to `tpm_buf_init()`: allocate + initialize.
+    ///
+    /// This method only compiles when `N` is at least [`TPM_HEADER_SIZE`].
+    ///
+    /// ```compile_fail
+    /// use tpm_core::{types::TpmTag, TpmBuf};
+    /// let _ = TpmBuf::<9>::new_command(TpmTag::Null, 0);
+    /// ```
     pub fn new_command(tag: TpmTag, ordinal: u32) -> Self {
         let mut buf = TpmBuf {
             data: alloc_zeroed_storage::<N>(),
@@ -96,6 +137,13 @@ impl<const N: usize> TpmBuf<N> {
         buf
     }
     /// Corresponds to `tpm_buf_init_sized()`.
+    ///
+    /// This method only compiles when `N` is at least [`TPM2B_HEADER_SIZE`].
+    ///
+    /// ```compile_fail
+    /// use tpm_core::TpmBuf;
+    /// let _ = TpmBuf::<1>::new_sized();
+    /// ```
     pub fn new_sized() -> Self {
         let mut buf = TpmBuf {
             data: alloc_zeroed_storage::<N>(),
@@ -252,5 +300,20 @@ impl<const N: usize> TpmBuf<N> {
     /// overflow**, so it requires `!overflow`.
     pub fn as_wire(&self) -> &[u8] {
         &self.data[0..self.length]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TpmBuf, TPM2B_HEADER_SIZE, TPM_HEADER_SIZE};
+    use crate::types::TpmTag;
+
+    #[test]
+    fn constructors_accept_minimum_header_sizes() {
+        let command = TpmBuf::<TPM_HEADER_SIZE>::new_command(TpmTag::Null, 0);
+        assert_eq!(command.len(), TPM_HEADER_SIZE);
+
+        let sized = TpmBuf::<TPM2B_HEADER_SIZE>::new_sized();
+        assert_eq!(sized.len(), TPM2B_HEADER_SIZE);
     }
 }
